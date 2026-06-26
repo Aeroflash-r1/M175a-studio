@@ -18,6 +18,9 @@ import com.example.domain.repository.UsbDeviceRepository
 import com.example.domain.repository.UsbRepository
 import com.example.domain.repository.UsbCommunicationRepository
 import com.example.domain.repository.UsbDeviceCommunicationRepository
+import com.example.scanner.protocol.ScannerProtocolLogger
+import com.example.scanner.protocol.ScannerProtocolValidator
+import com.example.scanner.protocol.ScannerProtocolRepository
 import org.koin.android.ext.koin.androidContext
 import org.koin.androidx.viewmodel.dsl.viewModel
 import org.koin.dsl.module
@@ -31,6 +34,11 @@ val appModule = module {
     single<Logger> { AndroidLogger() }
     single { UsbLogger(get()) }
     single { UsbPacketLogger(get()) }
+    single { ScannerProtocolLogger(get()) }
+
+    // Scanner Protocol
+    single { ScannerProtocolValidator(get()) }
+    single { ScannerProtocolRepository(get(), get()) }
 
     // Android USB System Services
     single { androidContext().getSystemService(Context.USB_SERVICE) as UsbManager }

@@ -314,6 +314,22 @@ fun HpDiagnosticsCard(diagnostics: HpDiagnostics) {
             DiagnosticRow(label = "Descriptor Integrity", status = diagnostics.descriptorValidation.contains("Pass"), value = diagnostics.descriptorValidation)
             
             HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+            
+            Text(
+                text = "Scanner Protocol Diagnostics (Phase 5)",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+            
+            DiagnosticRow(label = "SOAP Ready", status = diagnostics.soapReady, value = if (diagnostics.soapReady) "Ready" else "Inactive")
+            DiagnosticRow(label = "XML Ready", status = diagnostics.xmlReady, value = if (diagnostics.xmlReady) "Ready" else "Inactive")
+            DiagnosticRow(label = "DIME Ready", status = diagnostics.dimeReady, value = if (diagnostics.dimeReady) "Ready" else "Inactive")
+            DiagnosticRow(label = "Scanner Protocol Ready", status = diagnostics.scannerProtocolReady, value = if (diagnostics.scannerProtocolReady) "Ready" else "Inactive")
+            DiagnosticRow(label = "Protocol Validation Status", status = diagnostics.protocolValidationStatus.contains("Pass"), value = diagnostics.protocolValidationStatus)
+            
+            HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),

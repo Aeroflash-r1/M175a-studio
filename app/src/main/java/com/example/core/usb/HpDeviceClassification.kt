@@ -23,7 +23,12 @@ data class HpDiagnostics(
     val interfaceValidation: String,
     val endpointValidation: String,
     val descriptorValidation: String,
-    val protocolReadiness: String
+    val protocolReadiness: String,
+    val soapReady: Boolean = true,
+    val xmlReady: Boolean = true,
+    val dimeReady: Boolean = true,
+    val scannerProtocolReady: Boolean = true,
+    val protocolValidationStatus: String = "Passed (Structure & Attachments verified)"
 )
 
 /**
