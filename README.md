@@ -1,11 +1,19 @@
-<div align="center">
+# M175a Studio
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+M175a Studio is an Android application that fully replaces HP software for the HP LaserJet 100 color MFP M175a printer and scanner.
 
-  <h1>Built with AI Studio</h2>
+## Documentation Index
+- [Project Specification](PROJECT_SPECIFICATION.md)
+- [Architecture](ARCHITECTURE.md)
+- [Roadmap](ROADMAP.md)
+- [USB Protocol](USB_PROTOCOL.md)
+- [Scanner Protocol](SCANNER_PROTOCOL.md)
+- [Printer Protocol](PRINTER_PROTOCOL.md)
+- [Coding Guidelines](CODING_GUIDELINES.md)
+- [Contributing](CONTRIBUTING.md)
 
-  <p>The fastest path from prompt to production with Gemini.</p>
-
-  <a href="https://aistudio.google.com/apps">Start building</a>
-
-</div>
+## Device Support
+- **Target Device:** HP LaserJet 100 color MFP M175a
+- **Platform:** Android (Minimum SDK 24)
+- **Language:** Kotlin
+- **UI Toolkit:** Jetpack Compose
