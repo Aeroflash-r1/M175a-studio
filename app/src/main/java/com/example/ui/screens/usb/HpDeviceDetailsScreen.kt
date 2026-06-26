@@ -466,7 +466,7 @@ fun HpConfigurationCard(config: UsbConfigurationInfo) {
                 val (title, color) = when (interf.id) {
                     0 -> "Scanner Subsystem (Interface 0)" to Color(0xFF1565C0)
                     1 -> "Printer Subsystem (Interface 1)" to Color(0xFF2E7D32)
-                    2 -> "Vendor Diagnostics (Interface 2)" to Color(0xFFD84315)
+                    2 -> "Vendor Interface (Interface 2)" to Color(0xFFD84315)
                     else -> "Unknown Subsystem" to MaterialTheme.colorScheme.onSurface
                 }
 

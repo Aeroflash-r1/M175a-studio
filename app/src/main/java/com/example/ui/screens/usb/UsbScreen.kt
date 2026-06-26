@@ -23,16 +23,28 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.core.usb.*
+import com.example.core.usb.transport.*
 import org.koin.androidx.compose.koinViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun UsbScreen(
     onBack: () -> Unit,
-    viewModel: UsbViewModel = koinViewModel()
+    viewModel: UsbViewModel = koinViewModel(),
+    communicationViewModel: UsbCommunicationViewModel = koinViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val commState by communicationViewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // Synchronize communication session with selected device
+    LaunchedEffect(uiState.selectedDevice) {
+        if (uiState.selectedDevice != null) {
+            communicationViewModel.startSession()
+        } else {
+            communicationViewModel.endSession()
+        }
+    }
 
     // Collect single-shot events
     LaunchedEffect(key1 = true) {
@@ -43,6 +55,16 @@ fun UsbScreen(
                 }
                 is UsbUiEvent.ConnectionSuccess -> {
                     // Handled if we need custom routing, but staying on detail is perfect.
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(key1 = true) {
+        communicationViewModel.uiEvent.collect { event ->
+            when (event) {
+                is UsbCommunicationUiEvent.ShowSnackbar -> {
+                    snackbarHostState.showSnackbar(event.message)
                 }
             }
         }
@@ -112,6 +134,27 @@ fun UsbScreen(
                         item {
                             Spacer(modifier = Modifier.height(16.dp))
                             Text(
+                                text = "USB Transport Diagnostics",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+                            UsbTransportDiagnosticsCard(
+                                info = info,
+                                commState = commState,
+                                onStartSession = { communicationViewModel.startSession() },
+                                onEndSession = { communicationViewModel.endSession() },
+                                onClaimInterface = { communicationViewModel.claimInterface(it) },
+                                onReleaseInterface = { communicationViewModel.releaseInterface(it) },
+                                onWriteBulk = { ep, hex -> communicationViewModel.writeRawBulk(ep, hex) },
+                                onReadBulk = { ep, size -> communicationViewModel.readRawBulk(ep, size) },
+                                onRecover = { communicationViewModel.recoverConnection() }
+                            )
+                        }
+
+                        item {
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
                                 text = "Device Detailed Descriptor",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
@@ -123,6 +166,265 @@ fun UsbScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+fun UsbTransportDiagnosticsCard(
+    info: UsbDeviceInfo,
+    commState: UsbCommunicationUiState,
+    onStartSession: () -> Unit,
+    onEndSession: () -> Unit,
+    onClaimInterface: (Int) -> Unit,
+    onReleaseInterface: (Int) -> Unit,
+    onWriteBulk: (Int, String) -> Unit,
+    onReadBulk: (Int, Int) -> Unit,
+    onRecover: () -> Unit
+) {
+    var selectedEpAddressStr by remember { mutableStateOf("") }
+    var payloadStr by remember { mutableStateOf("") }
+    var bufferSizeStr by remember { mutableStateOf("64") }
+
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Transport Live Metrics",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+
+            val stats = commState.stats
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Column(modifier = Modifier.weight(1f)) {
+                    DiagnosticMetricItem("Communication Ready", if (stats.isCommunicationReady) "ACTIVE" else "INACTIVE", stats.isCommunicationReady)
+                    DiagnosticMetricItem("Connection Open", if (stats.isConnectionOpen) "YES" else "NO", stats.isConnectionOpen)
+                    DiagnosticMetricItem("Interfaces Claimed", if (stats.claimedInterfaces.isEmpty()) "None" else stats.claimedInterfaces.joinToString(", "), stats.claimedInterfaces.isNotEmpty())
+                    DiagnosticMetricItem("Endpoints Ready", if (stats.readyEndpoints.isEmpty()) "None" else stats.readyEndpoints.joinToString(", ") { "0x${Integer.toHexString(it)}" }, stats.readyEndpoints.isNotEmpty())
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    DiagnosticMetricItem("Transfer Status", stats.transferStatus, stats.transferStatus != "Idle" && stats.transferStatus != "Disconnected")
+                    DiagnosticMetricItem("Bytes Sent", "${stats.bytesSent} B", false)
+                    DiagnosticMetricItem("Bytes Received", "${stats.bytesReceived} B", false)
+                    DiagnosticMetricItem("Duration", "${stats.connectionDurationSec} s", false)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                DiagnosticMetricItem("Transport Health", stats.transportHealth, stats.transportHealth == "Excellent")
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = "Last Transfer Detail: ${stats.lastTransferDetails}",
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
+            // Control Actions
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (!stats.isCommunicationReady) {
+                    Button(onClick = onStartSession, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Start Session")
+                    }
+                } else {
+                    FilledTonalButton(onClick = onEndSession, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("End Session")
+                    }
+                }
+
+                Button(
+                    onClick = onRecover,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Soft Recovery")
+                }
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
+            // Claims and Releases List
+            Text(
+                text = "Interface Claim Controllers",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+
+            info.configurations.forEach { config ->
+                config.interfaces.forEach { interf ->
+                    val isClaimed = stats.claimedInterfaces.contains(interf.id)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Interface ${interf.id} (${interf.className})",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+
+                        if (isClaimed) {
+                            ElevatedButton(
+                                onClick = { onReleaseInterface(interf.id) },
+                                colors = ButtonDefaults.elevatedButtonColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                            ) {
+                                Text("Release", color = MaterialTheme.colorScheme.onErrorContainer)
+                            }
+                        } else {
+                            ElevatedButton(
+                                onClick = { onClaimInterface(interf.id) }
+                            ) {
+                                Text("Claim")
+                            }
+                        }
+                    }
+                }
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
+            // Raw Bulk transfer terminal sandbox
+            Text(
+                text = "Raw Bulk Packet Sandbox",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+
+            OutlinedTextField(
+                value = selectedEpAddressStr,
+                onValueChange = { selectedEpAddressStr = it },
+                label = { Text("Endpoint Address (Hex or Int, e.g. 0x01, 1)") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = payloadStr,
+                    onValueChange = { payloadStr = it },
+                    label = { Text("Payload (HEX)") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = bufferSizeStr,
+                    onValueChange = { bufferSizeStr = it },
+                    label = { Text("Read Buffer Size") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            val targetEp = try {
+                if (selectedEpAddressStr.startsWith("0x", ignoreCase = true)) {
+                    selectedEpAddressStr.substring(2).toInt(16)
+                } else {
+                    selectedEpAddressStr.toInt()
+                }
+            } catch (e: Exception) {
+                null
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = {
+                        targetEp?.let { ep -> onWriteBulk(ep, payloadStr) }
+                    },
+                    enabled = targetEp != null && stats.isCommunicationReady && payloadStr.isNotEmpty(),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Bulk OUT")
+                }
+
+                Button(
+                    onClick = {
+                        val size = bufferSizeStr.toIntOrNull() ?: 64
+                        targetEp?.let { ep -> onReadBulk(ep, size) }
+                    },
+                    enabled = targetEp != null && stats.isCommunicationReady,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Bulk IN")
+                }
+            }
+
+            if (commState.lastResult.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(8.dp)) {
+                        Text(
+                            text = "Terminal Output:",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = commState.lastResult,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DiagnosticMetricItem(label: String, value: String, highlight: Boolean) {
+    Column(modifier = Modifier.padding(vertical = 4.dp)) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Bold,
+            color = if (highlight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+        )
     }
 }
 

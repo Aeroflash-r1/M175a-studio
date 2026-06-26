@@ -31,6 +31,8 @@ The device exposes three distinct USB interfaces.
   - EP9 Bulk IN
   - EP10 Interrupt IN
 
+The purpose of Interface 2 has not yet been fully reverse-engineered. It is currently identified only as a Vendor-specific Interface. Future protocol analysis may determine its exact functionality.
+
 ## Related Documentation
 - [Scanner Protocol](SCANNER_PROTOCOL.md)
 - [Printer Protocol](PRINTER_PROTOCOL.md)
