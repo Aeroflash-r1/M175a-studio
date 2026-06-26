@@ -34,6 +34,9 @@ jobs:
       - name: Configure Environment (Secrets)
         run: cp .env.example .env
 
+      - name: Make Gradle executable
+        run: chmod +x gradlew
+
       - name: Print Build Information
         run: |
           echo "===================================================="
@@ -51,9 +54,6 @@ jobs:
           echo "Target SDK Version: 36"
           echo "Build Variant: debug"
           echo "===================================================="
-
-      - name: Make Gradle executable
-        run: chmod +x gradlew
 
       - name: Run clean
         run: ./gradlew clean
