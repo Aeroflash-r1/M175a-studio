@@ -35,6 +35,9 @@ fun HomeScreen(onNavigate: (String) -> Unit) {
             Button(onClick = { onNavigate(Screen.Usb.route) }, modifier = Modifier.padding(4.dp)) {
                 Text("USB Diagnostics")
             }
+            Button(onClick = { onNavigate(Screen.HpDetails.route) }, modifier = Modifier.padding(4.dp)) {
+                Text("HP LaserJet Discovery")
+            }
         }
     }
 }

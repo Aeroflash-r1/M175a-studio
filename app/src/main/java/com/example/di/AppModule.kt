@@ -10,6 +10,7 @@ import com.example.core.usb.UsbLogger
 import com.example.core.usb.UsbMonitor
 import com.example.core.usb.UsbPermissionManager
 import com.example.core.usb.UsbViewModel
+import com.example.core.usb.HpViewModel
 import com.example.domain.repository.UsbDeviceRepository
 import com.example.domain.repository.UsbRepository
 import org.koin.android.ext.koin.androidContext
@@ -39,4 +40,5 @@ val appModule = module {
 
     // ViewModels
     viewModel { UsbViewModel(get()) }
+    viewModel { HpViewModel(get(), get()) }
 }
