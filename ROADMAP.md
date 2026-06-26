@@ -2,8 +2,8 @@
 
 The development of M175a Studio is divided into the following strict phases:
 
-- **Phase 0:** Project Documentation *(Current)*
-- **Phase 1:** Android Foundation
+- **Phase 0:** Project Documentation
+- **Phase 1:** Android Foundation *(Current)*
 - **Phase 2:** USB Framework
 - **Phase 3:** Device Discovery
 - **Phase 4:** USB Communication Layer
