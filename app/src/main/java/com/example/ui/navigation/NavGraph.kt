@@ -11,6 +11,7 @@ import com.example.ui.screens.home.HomeScreen
 import com.example.ui.screens.printer.PrinterScreen
 import com.example.ui.screens.scanner.ScannerScreen
 import com.example.ui.screens.settings.SettingsScreen
+import com.example.ui.screens.usb.UsbScreen
 
 /**
  * Main navigation graph for the application.
@@ -43,6 +44,9 @@ fun MainNavGraph(
         }
         composable(Screen.About.route) {
             AboutScreen(onBack = { navController.popBackStack() })
+        }
+        composable(Screen.Usb.route) {
+            UsbScreen(onBack = { navController.popBackStack() })
         }
     }
 }

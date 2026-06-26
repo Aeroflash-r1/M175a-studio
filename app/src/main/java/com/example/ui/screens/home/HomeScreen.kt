@@ -32,6 +32,9 @@ fun HomeScreen(onNavigate: (String) -> Unit) {
             Button(onClick = { onNavigate(Screen.Settings.route) }, modifier = Modifier.padding(4.dp)) {
                 Text("Settings")
             }
+            Button(onClick = { onNavigate(Screen.Usb.route) }, modifier = Modifier.padding(4.dp)) {
+                Text("USB Diagnostics")
+            }
         }
     }
 }
