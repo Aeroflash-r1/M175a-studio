@@ -6,6 +6,9 @@ import com.example.core.usb.UsbDeviceInfo
 import com.example.core.usb.UsbDeviceSummary
 import com.example.core.usb.UsbEvent
 import com.example.domain.model.ResultWrapper
+import com.example.scanner.engine.ScannerState
+import com.example.scanner.engine.ScannerJob
+import com.example.scanner.engine.ScannerResult
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -69,7 +72,14 @@ interface PrinterRepository {
  * Repository interface for Scanner interaction.
  */
 interface ScannerRepository {
-    // Placeholder for future scanner logic
+    val state: Flow<ScannerState>
+    val progress: Flow<Float>
+    val activeJob: Flow<ScannerJob?>
+    val isSimulationMode: Flow<Boolean>
+
+    suspend fun startScan(resolutionDpi: Int, colorMode: String): ScannerResult
+    fun cancelScan()
+    fun setSimulationMode(enabled: Boolean)
 }
 
 /**

@@ -21,6 +21,10 @@ import com.example.domain.repository.UsbDeviceCommunicationRepository
 import com.example.scanner.protocol.ScannerProtocolLogger
 import com.example.scanner.protocol.ScannerProtocolValidator
 import com.example.scanner.protocol.ScannerProtocolRepository
+import com.example.scanner.engine.ScannerEngineLogger
+import com.example.scanner.engine.ScannerEngine
+import com.example.scanner.engine.ScannerEngineRepository
+import com.example.ui.screens.scanner.ScannerViewModel
 import org.koin.android.ext.koin.androidContext
 import org.koin.androidx.viewmodel.dsl.viewModel
 import org.koin.dsl.module
@@ -40,6 +44,11 @@ val appModule = module {
     single { ScannerProtocolValidator(get()) }
     single { ScannerProtocolRepository(get(), get()) }
 
+    // Scanner Engine
+    single { ScannerEngineLogger(get()) }
+    single { ScannerEngine(get(), get(), get()) }
+    single<com.example.domain.repository.ScannerRepository> { ScannerEngineRepository(get(), get()) }
+
     // Android USB System Services
     single { androidContext().getSystemService(Context.USB_SERVICE) as UsbManager }
 
@@ -58,4 +67,5 @@ val appModule = module {
     viewModel { UsbViewModel(get()) }
     viewModel { HpViewModel(get(), get()) }
     viewModel { UsbCommunicationViewModel(get()) }
+    viewModel { ScannerViewModel(get()) }
 }
