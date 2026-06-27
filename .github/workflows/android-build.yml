@@ -34,19 +34,64 @@ jobs:
       - name: Configure Environment (Secrets)
         run: cp .env.example .env
 
-      - name: Make Gradle executable
-        run: chmod +x gradlew
-
-      - name: Print Build Information
+      - name: Self-Healing Gradle Wrapper Setup
         run: |
           echo "===================================================="
-          echo "              M175a CI BUILD INFORMATION"
+          echo "         SELF-HEALING GRADLE WRAPPER SETUP"
           echo "===================================================="
-          echo "Java Version:"
-          java -version
+          
+          echo "Deleting existing/corrupt Gradle wrapper files to start fresh..."
+          rm -f gradle/wrapper/gradle-wrapper.jar
+          rm -f gradle/wrapper/gradle-wrapper.properties
+          rm -f gradlew
+          rm -f gradlew.bat
+          
+          echo "Installing/generating a fresh Gradle wrapper (version 9.3.1)..."
+          gradle wrapper --gradle-version 9.3.1 || {
+            echo "⚠️ System Gradle command failed. Attempting standalone fallback installation of Gradle 9.3.1..."
+            wget -q https://services.gradle.org/distributions/gradle-9.3.1-bin.zip || {
+              echo "❌ Failed to download Gradle 9.3.1 distribution zip"
+              exit 1
+            }
+            unzip -q gradle-9.3.1-bin.zip || {
+              echo "❌ Failed to unzip Gradle distribution"
+              exit 1
+            }
+            ./gradle-9.3.1/bin/gradle wrapper --gradle-version 9.3.1 || {
+              echo "❌ Standalone Gradle failed to generate wrapper"
+              exit 1
+            }
+          }
+          
+          echo "Ensuring the generated wrapper files exist:"
+          ls -la gradle/wrapper/
+          
+          echo "Setting execution permissions on gradlew..."
+          chmod +x gradlew || {
+            echo "❌ Failed to set executable permissions on gradlew"
+            exit 1
+          }
+          
+          echo "✅ Self-healing Gradle wrapper setup completed successfully!"
+          echo "===================================================="
+
+      - name: Print Diagnostic & Build Information
+        run: |
+          echo "===================================================="
+          echo "         ENVIRONMENT & BUILD DIAGNOSTICS"
+          echo "===================================================="
+          echo "Operating System Info:"
+          uname -a
+          cat /etc/os-release | grep -E "PRETTY_NAME|VERSION=" || true
           echo "----------------------------------------------------"
-          echo "Gradle Version:"
-          ./gradlew --version | grep "Gradle"
+          echo "Java Version:"
+          java -version || { echo "❌ Java not found"; exit 1; }
+          echo "----------------------------------------------------"
+          echo "Gradle Version (via newly generated wrapper):"
+          ./gradlew --version || { echo "❌ Generated gradlew execution failed"; exit 1; }
+          echo "----------------------------------------------------"
+          echo "Android SDK Location:"
+          echo "$ANDROID_HOME"
           echo "----------------------------------------------------"
           echo "Android Gradle Plugin Version: 9.1.1"
           echo "Kotlin Version: 2.2.10"
@@ -55,17 +100,61 @@ jobs:
           echo "Build Variant: debug"
           echo "===================================================="
 
-      - name: Run clean
-        run: ./gradlew clean
+      - name: Verify Project Structure and Configuration Files
+        run: |
+          echo "===================================================="
+          echo "         PROJECT STRUCTURE VERIFICATION"
+          echo "===================================================="
+          echo "Checking files at workspace root:"
+          ls -la
+          
+          echo "Verifying presence of critical Gradle configuration files..."
+          files_to_check=("gradlew" "gradle/wrapper/gradle-wrapper.properties" "settings.gradle.kts" "build.gradle.kts" "app/build.gradle.kts")
+          for file in "${files_to_check[@]}"; do
+            if [ -f "$file" ]; then
+              echo "✅ [FOUND] $file"
+            else
+              echo "❌ [MISSING] $file"
+              exit 1
+            fi
+          done
+          
+          echo "Gradle wrapper properties contents:"
+          cat gradle/wrapper/gradle-wrapper.properties
+          echo "===================================================="
 
-      - name: Run unit tests
-        run: ./gradlew test
+      - name: Run Gradle clean
+        run: |
+          ./gradlew clean --stacktrace --info --warning-mode all || {
+            echo "❌ 'gradlew clean' failed. Check diagnostic outputs above."
+            exit 1;
+          }
 
-      - name: Run lint
-        run: ./gradlew lint
+      - name: Run JVM unit tests
+        run: |
+          ./gradlew test --stacktrace --info --warning-mode all || {
+            echo "===================================================="
+            echo "               UNIT TESTS FAILED"
+            echo "===================================================="
+            echo "Extracting details of failed unit tests..."
+            find . -name "*.xml" -path "*/test-results/*" -exec grep -A 5 -i "failure" {} + || true
+            echo "❌ 'gradlew test' run failed."
+            exit 1;
+          }
+
+      - name: Run code linting
+        run: |
+          ./gradlew lint --stacktrace --info --warning-mode all || {
+            echo "❌ 'gradlew lint' compilation/checks failed."
+            exit 1;
+          }
 
       - name: Assemble Debug APK
-        run: ./gradlew assembleDebug
+        run: |
+          ./gradlew assembleDebug --stacktrace --info --warning-mode all || {
+            echo "❌ Debug APK assembly failed."
+            exit 1;
+          }
 
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
@@ -107,3 +196,12 @@ jobs:
           name: mapping-files
           path: app/build/outputs/mapping/
           if-no-files-found: ignore
+
+      - name: Upload Gradle Daemon Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-daemon-logs
+          path: ~/.gradle/daemon/*/daemon-*.log
+          if-no-files-found: ignore
+
