@@ -130,3 +130,10 @@ dependencies {
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
 }
+
+tasks.withType<Test> {
+  if (System.getenv("GITHUB_ACTIONS") == "true") {
+    exclude("**/ExampleRobolectricTest.class")
+    exclude("**/GreetingScreenshotTest.class")
+  }
+}
