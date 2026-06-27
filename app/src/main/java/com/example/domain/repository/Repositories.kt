@@ -65,7 +65,11 @@ interface UsbRepository {
  * Repository interface for Printer interaction.
  */
 interface PrinterRepository {
-    // Placeholder for future printer logic
+    /**
+     * Retrieves the printer's identity/model string via PJL.
+     * Useful for verifying communication readiness.
+     */
+    suspend fun getPrinterIdentity(): String
 }
 
 /**

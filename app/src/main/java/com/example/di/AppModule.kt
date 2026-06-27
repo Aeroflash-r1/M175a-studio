@@ -25,6 +25,9 @@ import com.example.scanner.engine.ScannerEngineLogger
 import com.example.scanner.engine.ScannerEngine
 import com.example.scanner.engine.ScannerEngineRepository
 import com.example.ui.screens.scanner.ScannerViewModel
+import com.example.printer.protocol.PrinterProtocolRepository
+import com.example.printer.PrinterRepositoryImpl
+import com.example.ui.screens.printer.PrinterViewModel
 import org.koin.android.ext.koin.androidContext
 import org.koin.androidx.viewmodel.dsl.viewModel
 import org.koin.dsl.module
@@ -49,6 +52,10 @@ val appModule = module {
     single { ScannerEngine(get(), get(), get()) }
     single<com.example.domain.repository.ScannerRepository> { ScannerEngineRepository(get(), get()) }
 
+    // Printer System
+    single { PrinterProtocolRepository(get()) }
+    single<com.example.domain.repository.PrinterRepository> { PrinterRepositoryImpl(get()) }
+
     // Android USB System Services
     single { androidContext().getSystemService(Context.USB_SERVICE) as UsbManager }
 
@@ -68,4 +75,5 @@ val appModule = module {
     viewModel { HpViewModel(get(), get()) }
     viewModel { UsbCommunicationViewModel(get()) }
     viewModel { ScannerViewModel(get()) }
+    viewModel { PrinterViewModel(get()) }
 }
