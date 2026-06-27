@@ -62,4 +62,13 @@ class UsbDeviceCommunicationRepository(
     override suspend fun recoverConnection(): Boolean {
         return usbTransport.recoverConnection()
     }
+
+    override fun getActiveDevice(): android.hardware.usb.UsbDevice? {
+        return connectionManager.getActiveDevice()
+    }
+
+    override fun getDeviceInfo(): com.example.core.usb.UsbDeviceInfo? {
+        val device = connectionManager.getActiveDevice() ?: return null
+        return com.example.core.usb.UsbDeviceParser.parseDevice(device)
+    }
 }

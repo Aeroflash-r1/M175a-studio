@@ -60,4 +60,14 @@ interface UsbCommunicationRepository {
      * Recovers from active USB errors.
      */
     suspend fun recoverConnection(): Boolean
+
+    /**
+     * Retrieves the active UsbDevice if connected.
+     */
+    fun getActiveDevice(): android.hardware.usb.UsbDevice?
+
+    /**
+     * Retrieves the parsed info of the active device.
+     */
+    fun getDeviceInfo(): com.example.core.usb.UsbDeviceInfo?
 }

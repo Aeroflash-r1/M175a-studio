@@ -16,8 +16,12 @@ class ScannerSession(
     private val isSimulation: Boolean
 ) {
 
+    private var scannerInterfaceId: Int = -1
+    private var bulkInEndpoint: Int = -1
+    private var bulkOutEndpoint: Int = -1
+
     /**
-     * Initializes and claims Interface 0 for scanning operations.
+     * Initializes and dynamically discovers the scanner interface and endpoints.
      */
     suspend fun open(): Boolean {
         if (isSimulation) {
@@ -25,16 +29,29 @@ class ScannerSession(
             return true
         }
 
-        logger.logRecovery("🔌 [SESSION] Opening USB scanner session. Claiming Interface 0...")
+        logger.logRecovery("🔌 [SESSION] Opening USB scanner session. Starting dynamic discovery...")
         val sessionStarted = usbCommRepository.startSession()
         if (!sessionStarted) {
-            logger.logError("Failed to start USB transport session")
+            logger.logError("❌ Failed to start USB transport session. No device connection available.")
             return false
         }
 
-        val claimed = usbCommRepository.claimInterface(0)
+        if (!discoverScannerInterface()) {
+            usbCommRepository.endSession()
+            return false
+        }
+
+        logger.logRecovery("🔌 [SESSION] Claiming Scanner Interface $scannerInterfaceId...")
+        val claimed = usbCommRepository.claimInterface(scannerInterfaceId)
         if (!claimed) {
-            logger.logError("Failed to claim Scanner interface 0")
+            logger.logError("❌ USB Session Failed: claimInterface($scannerInterfaceId) returned false.")
+            
+            // Re-list diagnostics on failure for easier debugging
+            val deviceInfo = usbCommRepository.getDeviceInfo()
+            if (deviceInfo != null) {
+                logger.logError("   Available Interfaces: ${deviceInfo.configurations.flatMap { it.interfaces }.map { "${it.id} ${it.className}" }}")
+            }
+            
             usbCommRepository.endSession()
             return false
         }
@@ -42,8 +59,59 @@ class ScannerSession(
         return true
     }
 
+    private fun discoverScannerInterface(): Boolean {
+        val deviceInfo = usbCommRepository.getDeviceInfo()
+        if (deviceInfo == null) {
+            logger.logError("❌ Cannot perform discovery: Device info is null.")
+            return false
+        }
+
+        logger.logRecovery("🔍 Analyzing USB descriptors for ${deviceInfo.productName ?: "Unknown Device"}...")
+
+        val allInterfaces = deviceInfo.configurations.flatMap { it.interfaces }
+        
+        // Detailed logging of every interface and endpoint found
+        allInterfaces.forEach { interf ->
+            logger.logRecovery("📊 Intf ${interf.id}: Class=0x${Integer.toHexString(interf.classId)} (${interf.className}), Sub=${interf.subclassId}, Prot=${interf.protocol}")
+            interf.endpoints.forEach { ep ->
+                logger.logRecovery("   ↳ EP 0x${Integer.toHexString(ep.address)} [${ep.direction}]: Type=${ep.type}, MaxPacket=${ep.maxPacketSize}")
+            }
+        }
+
+        // Heuristic: Find all interfaces with at least one Bulk IN and one Bulk OUT endpoint.
+        // We filter out the Printer interface (Class 7) and look for Vendor Specific (0xFF).
+        val candidates = allInterfaces.filter { interf ->
+            val hasBulkIn = interf.endpoints.any { it.type == "BULK" && it.direction == "IN" }
+            val hasBulkOut = interf.endpoints.any { it.type == "BULK" && it.direction == "OUT" }
+            interf.classId != 7 && hasBulkIn && hasBulkOut
+        }.sortedByDescending { it.id } // On HP MFPs, the scanner is typically the highest ID interface.
+
+        if (candidates.isEmpty()) {
+            logger.logError("❌ No suitable scanner interface discovered. Checked ${allInterfaces.size} interfaces.")
+            return false
+        }
+
+        // We pick the best candidate (highest ID as per HP convention)
+        val scannerInterface = candidates.first()
+        scannerInterfaceId = scannerInterface.id
+        bulkInEndpoint = scannerInterface.endpoints.find { it.type == "BULK" && it.direction == "IN" }?.address ?: -1
+        bulkOutEndpoint = scannerInterface.endpoints.find { it.type == "BULK" && it.direction == "OUT" }?.address ?: -1
+
+        if (bulkInEndpoint == -1 || bulkOutEndpoint == -1) {
+            logger.logError("❌ Interface $scannerInterfaceId selected but endpoints are invalid.")
+            return false
+        }
+
+        logger.logRecovery("✅ Discovery Successful:")
+        logger.logRecovery("   Selected Interface: $scannerInterfaceId")
+        logger.logRecovery("   Bulk IN Endpoint: 0x${Integer.toHexString(bulkInEndpoint)}")
+        logger.logRecovery("   Bulk OUT Endpoint: 0x${Integer.toHexString(bulkOutEndpoint)}")
+
+        return true
+    }
+
     /**
-     * Releases Interface 0 and closes the USB session.
+     * Releases the scanner interface and closes the USB session.
      */
     suspend fun close() {
         if (isSimulation) {
@@ -51,9 +119,12 @@ class ScannerSession(
             return
         }
 
-        logger.logRecovery("🔌 [SESSION] Closing USB scanner session. Releasing Interface 0...")
-        usbCommRepository.releaseInterface(0)
+        if (scannerInterfaceId != -1) {
+            logger.logRecovery("🔌 [SESSION] Closing USB scanner session. Releasing Interface $scannerInterfaceId...")
+            usbCommRepository.releaseInterface(scannerInterfaceId)
+        }
         usbCommRepository.endSession()
+        scannerInterfaceId = -1
     }
 
     /**
@@ -65,14 +136,18 @@ class ScannerSession(
             return generateSimulatedResponse(soapXml)
         }
 
-        logger.logRecovery("📡 [USB OUT] Transferring ${soapXml.length} characters of SOAP XML...")
-        val writeResult = usbCommRepository.writeBulk(0x03, soapXml.toByteArray(Charsets.UTF_8))
+        if (bulkOutEndpoint == -1 || bulkInEndpoint == -1) {
+            throw Exception("USB session endpoints not initialized. Discovery may have failed.")
+        }
+
+        logger.logRecovery("📡 [USB OUT] Transferring ${soapXml.length} characters to EP 0x${Integer.toHexString(bulkOutEndpoint)}...")
+        val writeResult = usbCommRepository.writeBulk(bulkOutEndpoint, soapXml.toByteArray(Charsets.UTF_8))
         if (writeResult !is com.example.core.usb.transport.UsbTransferResult.Success) {
             throw Exception("USB bulk write failed: $writeResult")
         }
 
-        logger.logRecovery("📡 [USB IN] Awaiting XML response payload from EP3...")
-        val readResult = usbCommRepository.readBulk(0x83, 65536)
+        logger.logRecovery("📡 [USB IN] Awaiting XML response payload from EP 0x${Integer.toHexString(bulkInEndpoint)}...")
+        val readResult = usbCommRepository.readBulk(bulkInEndpoint, 65536)
         if (readResult !is com.example.core.usb.transport.UsbTransferResult.Success) {
             throw Exception("USB bulk read failed: $readResult")
         }
@@ -90,15 +165,19 @@ class ScannerSession(
             return generateSimulatedDimeResponse(soapXml)
         }
 
-        logger.logRecovery("📡 [USB OUT] Sending SOAP RetrieveImage request...")
-        val writeResult = usbCommRepository.writeBulk(0x03, soapXml.toByteArray(Charsets.UTF_8))
+        if (bulkOutEndpoint == -1 || bulkInEndpoint == -1) {
+            throw Exception("USB session endpoints not initialized. Discovery may have failed.")
+        }
+
+        logger.logRecovery("📡 [USB OUT] Sending SOAP RetrieveImage request to EP 0x${Integer.toHexString(bulkOutEndpoint)}...")
+        val writeResult = usbCommRepository.writeBulk(bulkOutEndpoint, soapXml.toByteArray(Charsets.UTF_8))
         if (writeResult !is com.example.core.usb.transport.UsbTransferResult.Success) {
             throw Exception("USB bulk write failed: $writeResult")
         }
 
-        logger.logRecovery("📡 [USB IN] Fetching multi-megabyte binary DIME stream...")
+        logger.logRecovery("📡 [USB IN] Fetching multi-megabyte binary DIME stream from EP 0x${Integer.toHexString(bulkInEndpoint)}...")
         val largeBuffer = 4 * 1024 * 1024 // 4MB buffer for scan payload
-        val readResult = usbCommRepository.readBulk(0x83, largeBuffer, timeoutMs = 15000)
+        val readResult = usbCommRepository.readBulk(bulkInEndpoint, largeBuffer, timeoutMs = 15000)
         if (readResult !is com.example.core.usb.transport.UsbTransferResult.Success) {
             throw Exception("USB bulk read failed: $readResult")
         }
