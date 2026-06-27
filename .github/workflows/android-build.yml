@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    name: Build and Verify App
+    name: Build and Verify
     runs-on: ubuntu-latest
 
     steps:
@@ -21,35 +21,33 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-          cache: 'gradle'
 
-      - name: Grant Execute Permission for Gradlew
-        run: chmod +x gradlew
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: wrapper # Uses the version from gradle-wrapper.properties but via the action's own installer
 
-      - name: Configure Environment File
+      - name: Configure Environment
         run: |
           if [ -f .env.example ]; then
             cp .env.example .env
           else
-            echo "No .env.example found, creating empty .env"
             touch .env
           fi
 
-      - name: Build and Test with Gradle
-        run: ./gradlew clean assembleDebug test --stacktrace
+      - name: Build and Test
+        run: gradle clean assembleDebug test --stacktrace
 
-      - name: Upload Debug APK Artifact
+      - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: App-Debug-APK
           path: app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
 
-      - name: Upload Test Reports Artifact
+      - name: Upload Reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Test-Reports
           path: app/build/reports/tests/
-          if-no-files-found: ignore
