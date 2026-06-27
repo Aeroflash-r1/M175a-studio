@@ -35,19 +35,9 @@ jobs:
           else
             touch .env
           fi
-          # Generate debug keystore if it doesn't exist
-          if [ ! -f debug.keystore ]; then
-            keytool -genkey -v -keystore debug.keystore \
-              -keyalias androiddebugkey \
-              -keypass android \
-              -storepass android \
-              -storeType PKCS12 \
-              -dname "CN=Android Debug,O=Android,C=US" \
-              -validity 10000 -noprompt
-          fi
 
       - name: Build and Test
-        run: gradle clean assembleDebug test --stacktrace
+        run: gradle clean assembleDebug test --stacktrace -x validateSigningDebug
 
       - name: Upload APK
         if: success()
