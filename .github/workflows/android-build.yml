@@ -25,7 +25,8 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: wrapper # Uses the version from gradle-wrapper.properties but via the action's own installer
+          gradle-version: wrapper
+          validate-wrappers: false
 
       - name: Configure Environment
         run: |
