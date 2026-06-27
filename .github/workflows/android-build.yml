@@ -35,8 +35,15 @@ jobs:
           else
             touch .env
           fi
-          if [ -f debug.keystore.base64 ]; then
-            base64 -d debug.keystore.base64 > debug.keystore
+          # Generate debug keystore if it doesn't exist
+          if [ ! -f debug.keystore ]; then
+            keytool -genkey -v -keystore debug.keystore \
+              -keyalias androiddebugkey \
+              -keypass android \
+              -storepass android \
+              -storeType PKCS12 \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -validity 10000 -noprompt
           fi
 
       - name: Build and Test
