@@ -10,6 +10,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.ui.Modifier
 import androidx.navigation.compose.rememberNavController
 import com.example.ui.navigation.MainNavGraph
+import com.example.ui.navigation.PermissionsWrapper
 import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
@@ -20,10 +21,12 @@ class MainActivity : ComponentActivity() {
       MyApplicationTheme {
         val navController = rememberNavController()
         Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-          MainNavGraph(
-              navController = navController,
-              modifier = Modifier.padding(innerPadding)
-          )
+          PermissionsWrapper {
+            MainNavGraph(
+                navController = navController,
+                modifier = Modifier.padding(innerPadding)
+            )
+          }
         }
       }
     }
