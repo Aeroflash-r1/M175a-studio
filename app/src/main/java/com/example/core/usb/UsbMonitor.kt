@@ -3,6 +3,7 @@ package com.example.core.usb
 import android.content.Context
 import android.content.IntentFilter
 import android.hardware.usb.UsbManager
+import android.os.Build
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -52,9 +53,10 @@ class UsbMonitor(
             addAction(UsbPermissionManager.ACTION_USB_PERMISSION)
         }
 
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
+            @Suppress("DEPRECATION")
             context.registerReceiver(receiver, filter)
         }
 
