@@ -54,20 +54,6 @@ class ScannerEngineTest {
 
         override suspend fun recoverConnection(): Boolean = true
 
-        // Implement the probeMassStorage with the correct return type (com.example.core.usb.MsdProbeResult)
-        override suspend fun probeMassStorage(interfaceId: Int): com.example.core.usb.MsdProbeResult {
-            // Return a harmless non-throwing default indicating no mass storage present — safe for unit tests.
-            return com.example.core.usb.MsdProbeResult(
-                interfaceId = interfaceId,
-                behavesAsMsd = false,
-                vendor = "",
-                product = "",
-                revision = "",
-                rawHexResponse = "",
-                errorDetails = "Stubbed in test"
-            )
-        }
-
         override fun getActiveDevice(): android.hardware.usb.UsbDevice? {
             return null
         }
