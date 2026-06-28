@@ -11,7 +11,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -50,7 +50,7 @@ fun UsbAnalyzerScreen(
                         Icon(Icons.Default.PlayArrow, contentDescription = "Replay Session")
                     }
                     IconButton(onClick = { /* TODO: Export */ }) {
-                        Icon(Icons.Default.List, contentDescription = "Export JSON/PCAP")
+                        Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Export JSON/PCAP")
                     }
                     IconButton(onClick = { viewModel.clear() }) {
                         Icon(Icons.Default.Delete, contentDescription = "Clear")
