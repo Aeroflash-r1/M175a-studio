@@ -13,4 +13,5 @@ sealed class Screen(val route: String) {
     object Usb : Screen("usb")
     object HpDetails : Screen("hp_details")
     object Analyzer : Screen("analyzer")
+    object SessionReports : Screen("session_reports")
 }

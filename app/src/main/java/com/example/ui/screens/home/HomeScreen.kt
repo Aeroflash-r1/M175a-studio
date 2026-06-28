@@ -41,6 +41,9 @@ fun HomeScreen(onNavigate: (String) -> Unit) {
             Button(onClick = { onNavigate(Screen.Analyzer.route) }, modifier = Modifier.padding(4.dp)) {
                 Text("USB Traffic Analyzer")
             }
+            Button(onClick = { onNavigate(Screen.SessionReports.route) }, modifier = Modifier.padding(4.dp)) {
+                Text("USB Session Reports")
+            }
         }
     }
 }

@@ -10,6 +10,7 @@ class UsbAnalyzerViewModel(
     val packets: StateFlow<List<UsbPacket>> = engine.packets
     val events: StateFlow<List<UsbEvent>> = engine.events
     val stats: StateFlow<UsbAnalyzerStats> = engine.stats
+    val sessionReports: StateFlow<List<UsbSessionReport>> = engine.sessionReports
 
     fun clear() {
         engine.clear()

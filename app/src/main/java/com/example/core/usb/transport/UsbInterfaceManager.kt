@@ -35,17 +35,21 @@ class UsbInterfaceManager(
              logger.logRecoveryInitiated("  ↳ EP: 0x${Integer.toHexString(ep.address)} [$dir], MaxPacket: ${ep.maxPacketSize}, Type: ${ep.type}")
         }
 
+        val startMs = System.currentTimeMillis()
         val success = usbConnection.rawConnection.claimInterface(usbInterface, force)
+        val duration = System.currentTimeMillis() - startMs
         logger.logRecoveryInitiated("[FORENSIC CLAIM RESULT] Intf: $interfaceId -> Result: $success")
 
         if (success) {
             claimedInterfaces.add(interfaceId)
             logger.logInterfaceClaimed(interfaceId)
+            logger.logClaimAttempt(interfaceId, force, true, duration)
         } else {
             logger.logTransferFailure("CLAIM_INTERFACE", interfaceId, "Android claimInterface returned false", 0)
             logger.logRecoveryFailure("[DUMP] Interface ID: $interfaceId")
             logger.logRecoveryFailure("[DUMP] Current Claimed: ${claimedInterfaces.joinToString()}")
             logger.logRecoveryFailure("[DUMP] Device path: ${usbConnection.device.deviceName}, API: ${android.os.Build.VERSION.SDK_INT}")
+            logger.logClaimAttempt(interfaceId, force, false, duration, "Android claimInterface returned false")
         }
         return success
     }

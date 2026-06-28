@@ -15,19 +15,33 @@ class UsbPacketLogger(
 
     private val tag = "UsbTransport"
 
-    fun logConnectionOpen(deviceName: String) {
+    fun logConnectionOpen(device: android.hardware.usb.UsbDevice, rawConnection: android.hardware.usb.UsbDeviceConnection) {
+        val deviceName = device.deviceName
         logger.i(tag, "🔌 [CONNECTION OPEN] Connected to device: $deviceName")
+        analyzerEngine.startSession(device, System.identityHashCode(rawConnection))
         analyzerEngine.logEvent("CONNECTION OPEN", "Connected to device: $deviceName", "Green")
     }
 
     fun logConnectionClose(deviceName: String) {
         logger.i(tag, "🔌 [CONNECTION CLOSE] Disconnected from device: $deviceName")
         analyzerEngine.logEvent("CONNECTION CLOSE", "Disconnected from device: $deviceName", "Yellow")
+        analyzerEngine.endSession()
     }
 
     fun logInterfaceClaimed(interfaceId: Int) {
         logger.i(tag, "🛡️ [INTERFACE CLAIMED] Claimed USB Interface: $interfaceId")
         analyzerEngine.logEvent("INTERFACE CLAIMED", "Claimed USB Interface: $interfaceId", "Green")
+    }
+
+    fun logClaimAttempt(interfaceId: Int, force: Boolean, result: Boolean, durationMs: Long, errorMessage: String? = null) {
+        analyzerEngine.logClaimAttempt(
+            interfaceNumber = interfaceId,
+            force = force,
+            result = result,
+            durationMs = durationMs,
+            exception = errorMessage,
+            failureDiagnostic = if (!result) "Android claimInterface returned false." else null
+        )
     }
 
     fun logInterfaceReleased(interfaceId: Int) {

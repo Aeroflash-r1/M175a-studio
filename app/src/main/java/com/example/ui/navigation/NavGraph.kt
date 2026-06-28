@@ -15,6 +15,7 @@ import com.example.ui.screens.usb.UsbScreen
 import com.example.ui.screens.usb.HpDeviceDetailsScreen
 
 import com.example.ui.screens.analyzer.UsbAnalyzerScreen
+import com.example.ui.screens.analyzer.UsbSessionReportsScreen
 
 /**
  * Main navigation graph for the application.
@@ -56,6 +57,9 @@ fun MainNavGraph(
         }
         composable(Screen.Analyzer.route) {
             UsbAnalyzerScreen()
+        }
+        composable(Screen.SessionReports.route) {
+            UsbSessionReportsScreen(onBack = { navController.popBackStack() })
         }
     }
 }

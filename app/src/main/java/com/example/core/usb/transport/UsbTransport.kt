@@ -40,7 +40,7 @@ class UsbTransport(
         val sessionHashCode = System.identityHashCode(session)
         logger.logRecoveryInitiated("[FORENSIC LIFECYCLE] Session Ready. SessionHash: $sessionHashCode")
         
-        logger.logConnectionOpen(device.deviceName)
+        logger.logConnectionOpen(device, rawConnection)
         updateStats("Session Opened", "Connected to ${device.deviceName}")
         return session
     }
