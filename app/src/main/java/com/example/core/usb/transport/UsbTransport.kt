@@ -33,6 +33,9 @@ class UsbTransport(
         val connHashCode = System.identityHashCode(rawConnection)
         logger.logRecoveryInitiated("[FORENSIC LIFECYCLE] Device Opened. DevHash: $deviceHashCode, ConnHash: $connHashCode")
 
+        // RUN EXHAUSTIVE DIAGNOSTIC
+        UsbExhaustiveDiagnostic(logger).runDiagnostics(device, rawConnection)
+
         val connection = UsbConnection(device, rawConnection)
         val session = UsbSession(connection, logger)
         activeSession = session
