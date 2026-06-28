@@ -61,6 +61,17 @@ class ScannerEngineTest {
         override fun getDeviceInfo(): com.example.core.usb.UsbDeviceInfo? {
             return null
         }
+
+        override suspend fun probeMassStorage(interfaceId: Int): com.example.core.usb.MsdProbeResult {
+            return com.example.core.usb.MsdProbeResult(
+                interfaceId = interfaceId,
+                behavesAsMsd = false,
+                vendor = "Fake",
+                product = "Fake MSD",
+                revision = "1.0",
+                rawHexResponse = ""
+            )
+        }
     }
 
     private val fakeLogger = FakeLogger()
