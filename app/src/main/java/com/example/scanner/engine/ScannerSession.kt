@@ -101,7 +101,10 @@ class ScannerSession(
                 continue
             }
 
-            logger.logRecovery("🔌 [PROBE] Testing candidate Interface $candidateId. Claiming interface...")
+            logger.logRecovery("🔌 [PROBE] Testing candidate Interface $candidateId. Auto-releasing first if previously bound...")
+            usbCommRepository.releaseInterface(candidateId) // Try to free it first!
+            
+            logger.logRecovery("🔌 [PROBE] Claiming interface $candidateId...")
             val claimed = usbCommRepository.claimInterface(candidateId)
             if (!claimed) {
                 logger.logWarning("❌ [PROBE] Failed to claim candidate Interface $candidateId (claimInterface returned false). Trying next...")
@@ -176,6 +179,7 @@ class ScannerSession(
             throw Exception("USB session endpoints not initialized. Discovery may have failed.")
         }
 
+        logger.logRecovery("📡 [PRE-FLIGHT] Verifying endpoints before sendRequest... OUT: 0x${Integer.toHexString(bulkOutEndpoint)}, IN: 0x${Integer.toHexString(bulkInEndpoint)}")
         logger.logRecovery("📡 [USB OUT] Transferring ${soapXml.length} characters to EP 0x${Integer.toHexString(bulkOutEndpoint)}...")
         val writeResult = usbCommRepository.writeBulk(bulkOutEndpoint, soapXml.toByteArray(Charsets.UTF_8))
         if (writeResult !is com.example.core.usb.transport.UsbTransferResult.Success) {
@@ -205,6 +209,7 @@ class ScannerSession(
             throw Exception("USB session endpoints not initialized. Discovery may have failed.")
         }
 
+        logger.logRecovery("📡 [PRE-FLIGHT] Verifying endpoints before sendDimeRequest... OUT: 0x${Integer.toHexString(bulkOutEndpoint)}, IN: 0x${Integer.toHexString(bulkInEndpoint)}")
         logger.logRecovery("📡 [USB OUT] Sending SOAP RetrieveImage request to EP 0x${Integer.toHexString(bulkOutEndpoint)}...")
         val writeResult = usbCommRepository.writeBulk(bulkOutEndpoint, soapXml.toByteArray(Charsets.UTF_8))
         if (writeResult !is com.example.core.usb.transport.UsbTransferResult.Success) {

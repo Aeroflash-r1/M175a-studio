@@ -28,9 +28,18 @@ class UsbTransport(
     fun openSession(device: UsbDevice, rawConnection: UsbDeviceConnection): UsbSession {
         closeSession()
         startTimeMs = System.currentTimeMillis()
+        
+        val deviceHashCode = System.identityHashCode(device)
+        val connHashCode = System.identityHashCode(rawConnection)
+        logger.logRecoveryInitiated("[FORENSIC LIFECYCLE] Device Opened. DevHash: $deviceHashCode, ConnHash: $connHashCode")
+
         val connection = UsbConnection(device, rawConnection)
         val session = UsbSession(connection, logger)
         activeSession = session
+        
+        val sessionHashCode = System.identityHashCode(session)
+        logger.logRecoveryInitiated("[FORENSIC LIFECYCLE] Session Ready. SessionHash: $sessionHashCode")
+        
         logger.logConnectionOpen(device.deviceName)
         updateStats("Session Opened", "Connected to ${device.deviceName}")
         return session

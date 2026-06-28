@@ -19,13 +19,33 @@ class UsbInterfaceManager(
         if (claimedInterfaces.contains(interfaceId)) {
             return true
         }
-        val usbInterface = getInterfaceById(interfaceId) ?: return false
+        val usbInterface = getInterfaceById(interfaceId)
+        if (usbInterface == null) {
+            logger.logTransferFailure("CLAIM_INTERFACE", interfaceId, "Interface not found on device", 0)
+            return false
+        }
+        
+        val deviceHashCode = System.identityHashCode(usbConnection.device)
+        val connHashCode = System.identityHashCode(usbConnection.rawConnection)
+        logger.logRecoveryInitiated("[FORENSIC CLAIM] Intf: $interfaceId, Class: ${usbInterface.interfaceClass}, Sub: ${usbInterface.interfaceSubclass}, Prot: ${usbInterface.interfaceProtocol}, Alt: ${usbInterface.alternateSetting}, Force: $force, DevHash: $deviceHashCode, ConnHash: $connHashCode")
+        
+        for (i in 0 until usbInterface.endpointCount) {
+             val ep = usbInterface.getEndpoint(i)
+             val dir = if (ep.direction == android.hardware.usb.UsbConstants.USB_DIR_IN) "IN" else "OUT"
+             logger.logRecoveryInitiated("  ↳ EP: 0x${Integer.toHexString(ep.address)} [$dir], MaxPacket: ${ep.maxPacketSize}, Type: ${ep.type}")
+        }
+
         val success = usbConnection.rawConnection.claimInterface(usbInterface, force)
+        logger.logRecoveryInitiated("[FORENSIC CLAIM RESULT] Intf: $interfaceId -> Result: $success")
+
         if (success) {
             claimedInterfaces.add(interfaceId)
             logger.logInterfaceClaimed(interfaceId)
         } else {
             logger.logTransferFailure("CLAIM_INTERFACE", interfaceId, "Android claimInterface returned false", 0)
+            logger.logRecoveryFailure("[DUMP] Interface ID: $interfaceId")
+            logger.logRecoveryFailure("[DUMP] Current Claimed: ${claimedInterfaces.joinToString()}")
+            logger.logRecoveryFailure("[DUMP] Device path: ${usbConnection.device.deviceName}, API: ${android.os.Build.VERSION.SDK_INT}")
         }
         return success
     }
@@ -39,6 +59,10 @@ class UsbInterfaceManager(
             return true
         }
         val usbInterface = getInterfaceById(interfaceId) ?: return false
+        
+        val stackTraceStr = Thread.currentThread().stackTrace.take(8).joinToString(" -> ") { it.methodName }
+        logger.logRecoveryInitiated("[FORENSIC RELEASE] Intf: $interfaceId at ${System.currentTimeMillis()}, Caller: $stackTraceStr")
+
         val success = usbConnection.rawConnection.releaseInterface(usbInterface)
         if (success) {
             claimedInterfaces.remove(interfaceId)
