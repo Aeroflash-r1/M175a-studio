@@ -29,29 +29,15 @@ class ScannerSession(
             return true
         }
 
-        logger.logRecovery("🔌 [SESSION] Opening USB scanner session. Starting dynamic discovery...")
+        logger.logRecovery("🔌 [SESSION] Opening USB scanner session. Starting dynamic discovery and active protocol validation...")
         val sessionStarted = usbCommRepository.startSession()
         if (!sessionStarted) {
             logger.logError("❌ Failed to start USB transport session. No device connection available.")
             return false
         }
 
-        if (!discoverScannerInterface()) {
-            usbCommRepository.endSession()
-            return false
-        }
-
-        logger.logRecovery("🔌 [SESSION] Claiming Scanner Interface $scannerInterfaceId...")
-        val claimed = usbCommRepository.claimInterface(scannerInterfaceId)
-        if (!claimed) {
-            logger.logError("❌ USB Session Failed: claimInterface($scannerInterfaceId) returned false.")
-            
-            // Re-list diagnostics on failure for easier debugging
-            val deviceInfo = usbCommRepository.getDeviceInfo()
-            if (deviceInfo != null) {
-                logger.logError("   Available Interfaces: ${deviceInfo.configurations.flatMap { it.interfaces }.map { "${it.id} ${it.className}" }}")
-            }
-            
+        if (!discoverAndProbeScannerInterface()) {
+            logger.logError("❌ Could not open communications session to scanner interface: Active probe validation failed for all candidates.")
             usbCommRepository.endSession()
             return false
         }
@@ -59,73 +45,105 @@ class ScannerSession(
         return true
     }
 
-    private fun discoverScannerInterface(): Boolean {
+    private suspend fun discoverAndProbeScannerInterface(): Boolean {
         val deviceInfo = usbCommRepository.getDeviceInfo()
         if (deviceInfo == null) {
             logger.logError("❌ Cannot perform discovery: Device info is null.")
             return false
         }
 
-        logger.logRecovery("🔍 Analyzing USB descriptors for ${deviceInfo.productName ?: "Unknown Device"}...")
+        logger.logRecovery("🔍 Enumerating USB interfaces for device: ${deviceInfo.productName ?: "HP Multifunction Device"}...")
 
         val allInterfaces = deviceInfo.configurations.flatMap { it.interfaces }
         
         // Detailed logging of every interface and endpoint found
         allInterfaces.forEach { interf ->
-            logger.logRecovery("📊 Intf ${interf.id}: Class=0x${Integer.toHexString(interf.classId)} (${interf.className}), Sub=${interf.subclassId}, Prot=${interf.protocol}")
+            logger.logRecovery("📊 Discovered Intf ${interf.id}: Class=0x${Integer.toHexString(interf.classId)} (${interf.className}), Subclass=${interf.subclassId}, Protocol=${interf.protocol}, Endpoints=${interf.endpoints.size}")
             interf.endpoints.forEach { ep ->
-                logger.logRecovery("   ↳ EP 0x${Integer.toHexString(ep.address)} [${ep.direction}]: Type=${ep.type}, MaxPacket=${ep.maxPacketSize}")
+                logger.logRecovery("   ↳ EP 0x${Integer.toHexString(ep.address)} [${ep.direction}]: Type=${ep.type}, MaxPacketSize=${ep.maxPacketSize}")
             }
         }
 
-        // Heuristic: Find all interfaces with at least one Bulk IN and one Bulk OUT endpoint.
-        // We filter out the Printer interface (Class 7) and Mass Storage interface (Class 8) to avoid matching Printer or Smart Install modes.
+        // Rule 2: Protocol-based filtering. Reject Class 0x08 (Mass Storage) and 0x07 (Printer).
+        // Candidate interfaces must contain at least one Bulk IN and at least one Bulk OUT endpoint.
         val candidates = allInterfaces.filter { interf ->
             val hasBulkIn = interf.endpoints.any { it.type == "BULK" && it.direction == "IN" }
             val hasBulkOut = interf.endpoints.any { it.type == "BULK" && it.direction == "OUT" }
-            interf.classId != 7 && interf.classId != 8 && hasBulkIn && hasBulkOut
+            val isExcluded = interf.classId == 7 || interf.classId == 8
+            hasBulkIn && hasBulkOut && !isExcluded
         }
 
         if (candidates.isEmpty()) {
-            logger.logError("❌ No suitable scanner interface discovered. Checked ${allInterfaces.size} interfaces.")
+            logger.logError("❌ Filtered Candidate list is empty! No interface has both Bulk IN and Bulk OUT endpoints without being Mass Storage or Printer.")
             return false
         }
 
-        // Score candidates to robustly select the scanner interface
-        val scannerInterface = candidates.maxByOrNull { interf ->
+        // Score candidates based on preferred classes (0xFF Vendor-Specific or 0x06 Image) and lower interface IDs
+        val sortedCandidates = candidates.sortedWith(compareByDescending<com.example.core.usb.UsbInterfaceInfo> { interf ->
             var score = 0
-            
-            // Priority 1: Contains endpoint address matching standard HP scanner channel EP3 (Bulk OUT 0x03 or Bulk IN 0x83).
-            val hasEP3 = interf.endpoints.any { (it.address and 0x0F) == 3 }
-            if (hasEP3) {
-                score += 100
-            }
-            
-            // Priority 2: Vendor-specific (0xFF) or Image (0x06) class
-            if (interf.classId == 0xFF) score += 10
-            if (interf.classId == 0x06) score += 10
-            
-            // Priority 3: Prefer lower interface IDs (typically Interface 0 is the Scanner, Interface 2 is vendor/status)
+            if (interf.classId == 0xFF) score += 20
+            if (interf.classId == 0x06) score += 20
+            // Prefer lower interface ID (typically 0 on standard MFP configurations is scanner)
             score += (10 - interf.id)
-            
             score
-        }!!
+        })
 
-        scannerInterfaceId = scannerInterface.id
-        bulkInEndpoint = scannerInterface.endpoints.find { it.type == "BULK" && it.direction == "IN" }?.address ?: -1
-        bulkOutEndpoint = scannerInterface.endpoints.find { it.type == "BULK" && it.direction == "OUT" }?.address ?: -1
+        logger.logRecovery("🎯 Filtered candidates sorted by score: ${sortedCandidates.map { "Intf ${it.id} (Score: ${if (it.classId == 0xFF || it.classId == 0x06) 20 + 10 - it.id else 10 - it.id})" }}")
 
-        if (bulkInEndpoint == -1 || bulkOutEndpoint == -1) {
-            logger.logError("❌ Interface $scannerInterfaceId selected but endpoints are invalid.")
-            return false
+        // Try candidate interfaces one by one and perform runtime protocol handshake verification
+        for (candidate in sortedCandidates) {
+            val candidateId = candidate.id
+            val bulkInAddr = candidate.endpoints.find { it.type == "BULK" && it.direction == "IN" }?.address ?: -1
+            val bulkOutAddr = candidate.endpoints.find { it.type == "BULK" && it.direction == "OUT" }?.address ?: -1
+
+            if (bulkInAddr == -1 || bulkOutAddr == -1) {
+                logger.logWarning("⚠️ Candidate Interface $candidateId skipped due to invalid endpoint resolution.")
+                continue
+            }
+
+            logger.logRecovery("🔌 [PROBE] Testing candidate Interface $candidateId. Claiming interface...")
+            val claimed = usbCommRepository.claimInterface(candidateId)
+            if (!claimed) {
+                logger.logWarning("❌ [PROBE] Failed to claim candidate Interface $candidateId (claimInterface returned false). Trying next...")
+                continue
+            }
+
+            // Bind the active session endpoints and interface ID so sendRequest works during handshake probe
+            scannerInterfaceId = candidateId
+            bulkInEndpoint = bulkInAddr
+            bulkOutEndpoint = bulkOutAddr
+
+            logger.logRecovery("📊 [PROBE] Bound parameters for Interface $candidateId: Bulk IN = 0x${Integer.toHexString(bulkInEndpoint)}, Bulk OUT = 0x${Integer.toHexString(bulkOutEndpoint)}")
+
+            try {
+                logger.logRecovery("📡 [PROBE] Sending GetScannerElements validation SOAP request...")
+                val getElementsReq = GetScannerElements
+                val getElementsXml = protocolRepository.buildRequest(getElementsReq)
+                
+                val responseXml = sendRequest(getElementsXml)
+                val response = protocolRepository.parseResponse(responseXml)
+
+                if (response is ScannerElements) {
+                    logger.logRecovery("✅ [PROBE] Handshake succeeded! Interface $candidateId accepted. Manufacturer=${response.manufacturer}, Model=${response.model}, Status=${response.status}")
+                    return true // Keeps the interface claimed and active!
+                } else {
+                    logger.logWarning("⚠️ [PROBE] Response parsed successfully but returned unexpected message class: ${response.javaClass.simpleName}")
+                    throw Exception("Unexpected parsed message type")
+                }
+            } catch (e: Exception) {
+                logger.logWarning("❌ [PROBE] Active handshake probe failed on candidate Interface $candidateId: ${e.message}")
+                logger.logRecovery("🔌 [PROBE] Releasing Interface $candidateId and cleaning up state...")
+                usbCommRepository.releaseInterface(candidateId)
+                
+                // Reset bound parameters
+                scannerInterfaceId = -1
+                bulkInEndpoint = -1
+                bulkOutEndpoint = -1
+            }
         }
 
-        logger.logRecovery("✅ Discovery Successful:")
-        logger.logRecovery("   Selected Interface: $scannerInterfaceId")
-        logger.logRecovery("   Bulk IN Endpoint: 0x${Integer.toHexString(bulkInEndpoint)}")
-        logger.logRecovery("   Bulk OUT Endpoint: 0x${Integer.toHexString(bulkOutEndpoint)}")
-
-        return true
+        logger.logError("❌ All suitable candidate interfaces failed active protocol negotiation.")
+        return false
     }
 
     /**
