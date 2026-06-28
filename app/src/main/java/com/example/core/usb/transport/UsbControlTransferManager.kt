@@ -41,22 +41,22 @@ class UsbControlTransferManager(
             val duration = System.currentTimeMillis() - startTime
 
             if (result >= 0) {
-                logger.logTransferSuccess("CONTROL", 0, result, duration)
                 val responseData = if (isDirectionIn) {
                     buffer.sliceArray(0 until result)
                 } else {
                     buffer
                 }
+                logger.logTransferSuccess("CONTROL", 0, result, duration, responseData, if (isDirectionIn) "IN" else "OUT")
                 return@withContext UsbTransferResult.Success(result, responseData, duration)
             } else {
                 val err = "Native controlTransfer returned -1"
-                logger.logTransferFailure("CONTROL", 0, err, duration)
+                logger.logTransferFailure("CONTROL", 0, err, duration, if (isDirectionIn) "IN" else "OUT")
                 return@withContext UsbTransferResult.Failure(err, null, duration)
             }
         } catch (e: Exception) {
             val duration = System.currentTimeMillis() - startTime
             val err = "Control transfer exception: ${e.message}"
-            logger.logTransferFailure("CONTROL", 0, err, duration)
+            logger.logTransferFailure("CONTROL", 0, err, duration, if (isDirectionIn) "IN" else "OUT")
             return@withContext UsbTransferResult.Failure(err, e, duration)
         }
     }

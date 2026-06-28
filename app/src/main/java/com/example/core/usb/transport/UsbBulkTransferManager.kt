@@ -39,7 +39,7 @@ class UsbBulkTransferManager(
         if (endpoint == null) {
             val duration = System.currentTimeMillis() - startTime
             val err = "Failed to open output endpoint: 0x${Integer.toHexString(endpointAddress)}"
-            logger.logTransferFailure("BULK_WRITE", endpointAddress, err, duration)
+            logger.logTransferFailure("BULK_WRITE", endpointAddress, err, duration, "OUT")
             return@withContext UsbTransferResult.Failure(err, null, duration)
         }
 
@@ -53,8 +53,9 @@ class UsbBulkTransferManager(
                 if (result >= 0) {
                     bytesWritten = result
                     val duration = System.currentTimeMillis() - startTime
-                    logger.logTransferSuccess("BULK_WRITE", endpointAddress, bytesWritten, duration)
-                    return@withContext UsbTransferResult.Success(bytesWritten, data.sliceArray(0 until bytesWritten), duration)
+                    val outData = data.sliceArray(0 until bytesWritten)
+                    logger.logTransferSuccess("BULK_WRITE", endpointAddress, bytesWritten, duration, outData, "OUT")
+                    return@withContext UsbTransferResult.Success(bytesWritten, outData, duration)
                 } else {
                     attempt++
                 }
@@ -66,11 +67,11 @@ class UsbBulkTransferManager(
 
         val duration = System.currentTimeMillis() - startTime
         if (!coroutineContext.isActive) {
-            logger.logTransferFailure("BULK_WRITE", endpointAddress, "Transfer cancelled", duration)
+            logger.logTransferFailure("BULK_WRITE", endpointAddress, "Transfer cancelled", duration, "OUT")
             return@withContext UsbTransferResult.Failure("Transfer cancelled", null, duration)
         }
 
-        logger.logTransferFailure("BULK_WRITE", endpointAddress, "Write failed after $attempt attempts", duration)
+        logger.logTransferFailure("BULK_WRITE", endpointAddress, "Write failed after $attempt attempts", duration, "OUT")
         return@withContext UsbTransferResult.Failure("Bulk write failed after $attempt attempts", lastException, duration)
     }
 
@@ -95,7 +96,7 @@ class UsbBulkTransferManager(
         if (endpoint == null) {
             val duration = System.currentTimeMillis() - startTime
             val err = "Failed to open input endpoint: 0x${Integer.toHexString(endpointAddress)}"
-            logger.logTransferFailure("BULK_READ", endpointAddress, err, duration)
+            logger.logTransferFailure("BULK_READ", endpointAddress, err, duration, "IN")
             return@withContext UsbTransferResult.Failure(err, null, duration)
         }
 
@@ -108,8 +109,8 @@ class UsbBulkTransferManager(
                 val result = performNativeTransfer(endpoint, buffer, bufferSize, timeoutMs)
                 if (result >= 0) {
                     val duration = System.currentTimeMillis() - startTime
-                    logger.logTransferSuccess("BULK_READ", endpointAddress, result, duration)
                     val readData = buffer.sliceArray(0 until result)
+                    logger.logTransferSuccess("BULK_READ", endpointAddress, result, duration, readData, "IN")
                     return@withContext UsbTransferResult.Success(result, readData, duration)
                 } else {
                     attempt++
@@ -122,11 +123,11 @@ class UsbBulkTransferManager(
 
         val duration = System.currentTimeMillis() - startTime
         if (!coroutineContext.isActive) {
-            logger.logTransferFailure("BULK_READ", endpointAddress, "Transfer cancelled", duration)
+            logger.logTransferFailure("BULK_READ", endpointAddress, "Transfer cancelled", duration, "IN")
             return@withContext UsbTransferResult.Failure("Transfer cancelled", null, duration)
         }
 
-        logger.logTransferFailure("BULK_READ", endpointAddress, "Read failed after $attempt attempts", duration)
+        logger.logTransferFailure("BULK_READ", endpointAddress, "Read failed after $attempt attempts", duration, "IN")
         return@withContext UsbTransferResult.Failure("Bulk read failed after $attempt attempts", lastException, duration)
     }
 

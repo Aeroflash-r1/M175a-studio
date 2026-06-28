@@ -14,6 +14,8 @@ import com.example.ui.screens.settings.SettingsScreen
 import com.example.ui.screens.usb.UsbScreen
 import com.example.ui.screens.usb.HpDeviceDetailsScreen
 
+import com.example.ui.screens.analyzer.UsbAnalyzerScreen
+
 /**
  * Main navigation graph for the application.
  * Manages routing between all core screens.
@@ -51,6 +53,9 @@ fun MainNavGraph(
         }
         composable(Screen.HpDetails.route) {
             HpDeviceDetailsScreen(onBack = { navController.popBackStack() })
+        }
+        composable(Screen.Analyzer.route) {
+            UsbAnalyzerScreen()
         }
     }
 }

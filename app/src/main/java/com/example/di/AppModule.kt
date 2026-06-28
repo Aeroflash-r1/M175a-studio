@@ -32,15 +32,22 @@ import org.koin.android.ext.koin.androidContext
 import org.koin.androidx.viewmodel.dsl.viewModel
 import org.koin.dsl.module
 
+import com.example.core.usb.analyzer.UsbAnalyzerEngine
+
+import com.example.core.usb.analyzer.UsbAnalyzerViewModel
+
 /**
  * Main Koin dependency injection module.
  * Provides all core application dependencies.
  */
 val appModule = module {
+    // USB Analyzer Engine (Singleton)
+    single { UsbAnalyzerEngine() }
+
     // Logging Systems
     single<Logger> { AndroidLogger() }
     single { UsbLogger(get()) }
-    single { UsbPacketLogger(get()) }
+    single { UsbPacketLogger(get(), get()) }
     single { ScannerProtocolLogger(get()) }
 
     // Scanner Protocol
@@ -71,6 +78,7 @@ val appModule = module {
     single<UsbCommunicationRepository> { UsbDeviceCommunicationRepository(get(), get()) }
 
     // ViewModels
+    viewModel { UsbAnalyzerViewModel(get()) }
     viewModel { UsbViewModel(get()) }
     viewModel { HpViewModel(get(), get()) }
     viewModel { UsbCommunicationViewModel(get()) }

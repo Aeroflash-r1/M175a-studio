@@ -52,7 +52,8 @@ class UsbTransportTest {
     @Test
     fun testUsbPacketLoggerOutputs() {
         val fakeLogger = FakeLogger()
-        val transportLogger = UsbPacketLogger(fakeLogger)
+        val analyzerEngine = com.example.core.usb.analyzer.UsbAnalyzerEngine()
+        val transportLogger = UsbPacketLogger(fakeLogger, analyzerEngine)
 
         transportLogger.logConnectionOpen("test_device")
         transportLogger.logInterfaceClaimed(1)
