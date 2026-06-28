@@ -53,6 +53,14 @@ class ScannerEngineTest {
         }
 
         override suspend fun recoverConnection(): Boolean = true
+
+        override fun getActiveDevice(): android.hardware.usb.UsbDevice? {
+            return null
+        }
+
+        override fun getDeviceInfo(): com.example.core.usb.UsbDeviceInfo? {
+            return null
+        }
     }
 
     private val fakeLogger = FakeLogger()

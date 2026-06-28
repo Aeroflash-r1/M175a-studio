@@ -79,20 +79,38 @@ class ScannerSession(
         }
 
         // Heuristic: Find all interfaces with at least one Bulk IN and one Bulk OUT endpoint.
-        // We filter out the Printer interface (Class 7) and look for Vendor Specific (0xFF).
+        // We filter out the Printer interface (Class 7) and Mass Storage interface (Class 8) to avoid matching Printer or Smart Install modes.
         val candidates = allInterfaces.filter { interf ->
             val hasBulkIn = interf.endpoints.any { it.type == "BULK" && it.direction == "IN" }
             val hasBulkOut = interf.endpoints.any { it.type == "BULK" && it.direction == "OUT" }
-            interf.classId != 7 && hasBulkIn && hasBulkOut
-        }.sortedByDescending { it.id } // On HP MFPs, the scanner is typically the highest ID interface.
+            interf.classId != 7 && interf.classId != 8 && hasBulkIn && hasBulkOut
+        }
 
         if (candidates.isEmpty()) {
             logger.logError("❌ No suitable scanner interface discovered. Checked ${allInterfaces.size} interfaces.")
             return false
         }
 
-        // We pick the best candidate (highest ID as per HP convention)
-        val scannerInterface = candidates.first()
+        // Score candidates to robustly select the scanner interface
+        val scannerInterface = candidates.maxByOrNull { interf ->
+            var score = 0
+            
+            // Priority 1: Contains endpoint address matching standard HP scanner channel EP3 (Bulk OUT 0x03 or Bulk IN 0x83).
+            val hasEP3 = interf.endpoints.any { (it.address and 0x0F) == 3 }
+            if (hasEP3) {
+                score += 100
+            }
+            
+            // Priority 2: Vendor-specific (0xFF) or Image (0x06) class
+            if (interf.classId == 0xFF) score += 10
+            if (interf.classId == 0x06) score += 10
+            
+            // Priority 3: Prefer lower interface IDs (typically Interface 0 is the Scanner, Interface 2 is vendor/status)
+            score += (10 - interf.id)
+            
+            score
+        }!!
+
         scannerInterfaceId = scannerInterface.id
         bulkInEndpoint = scannerInterface.endpoints.find { it.type == "BULK" && it.direction == "IN" }?.address ?: -1
         bulkOutEndpoint = scannerInterface.endpoints.find { it.type == "BULK" && it.direction == "OUT" }?.address ?: -1
