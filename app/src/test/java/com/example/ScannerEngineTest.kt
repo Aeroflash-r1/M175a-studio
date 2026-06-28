@@ -54,6 +54,13 @@ class ScannerEngineTest {
 
         override suspend fun recoverConnection(): Boolean = true
 
+        // The interface used by the compiled code requires probeMassStorage; add a test stub so tests compile.
+        override suspend fun probeMassStorage(interfaceId: Int): com.example.core.usb.transport.MsdProbeResult {
+            // TODO: return a realistic MsdProbeResult when tests need to exercise mass storage probing.
+            // For now, throw to make it explicit if the test attempts to call it.
+            TODO("FakeUsbCommRepository.probeMassStorage() not implemented in test stub")
+        }
+
         override fun getActiveDevice(): android.hardware.usb.UsbDevice? {
             return null
         }
