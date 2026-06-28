@@ -113,3 +113,17 @@ sealed interface UsbConnectionResult {
     data class Success(val info: UsbDeviceInfo) : UsbConnectionResult
     data class Failure(val error: UsbError) : UsbConnectionResult
 }
+
+/**
+ * Result of a USB Mass Storage SCSI INQUIRY probe operation.
+ */
+data class MsdProbeResult(
+    val interfaceId: Int,
+    val behavesAsMsd: Boolean,
+    val vendor: String,
+    val product: String,
+    val revision: String,
+    val rawHexResponse: String,
+    val errorDetails: String? = null
+)
+

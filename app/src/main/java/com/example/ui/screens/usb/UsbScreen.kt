@@ -152,6 +152,24 @@ fun UsbScreen(
                             )
                         }
 
+                        val hasMsdInterface = info.configurations.flatMap { it.interfaces }.any { it.classId == 0x08 }
+                        if (hasMsdInterface) {
+                            item {
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text(
+                                    text = "USB Mass Storage Probe",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                )
+                                UsbMassStorageProbeCard(
+                                    info = info,
+                                    commState = commState,
+                                    onProbeMsd = { communicationViewModel.probeMassStorage(it) }
+                                )
+                            }
+                        }
+
                         item {
                             Spacer(modifier = Modifier.height(16.dp))
                             Text(
@@ -753,3 +771,144 @@ fun UsbEmptyState(onRefresh: () -> Unit) {
 private fun formatHex(value: Int): String {
     return "0x" + String.format("%04X", value)
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun UsbMassStorageProbeCard(
+    info: UsbDeviceInfo,
+    commState: UsbCommunicationUiState,
+    onProbeMsd: (Int) -> Unit
+) {
+    val msdInterfaces = remember(info) {
+        info.configurations.flatMap { it.interfaces }.filter { it.classId == 0x08 }
+    }
+    
+    var selectedInterfaceId by remember(msdInterfaces) {
+        mutableStateOf(msdInterfaces.firstOrNull()?.id ?: -1)
+    }
+
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Mass Storage Interface Diagnostic",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+
+            Text(
+                text = "This device exposes one or more USB Mass Storage interfaces. You can perform an active SCSI INQUIRY probe to query disk metadata and verify storage subsystem compatibility.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
+
+            if (msdInterfaces.size > 1) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Select MSD Interface:",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        msdInterfaces.forEach { interf ->
+                            FilterChip(
+                                selected = selectedInterfaceId == interf.id,
+                                onClick = { selectedInterfaceId = interf.id },
+                                label = { Text("Intf ${interf.id}") }
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
+            Button(
+                onClick = { if (selectedInterfaceId != -1) onProbeMsd(selectedInterfaceId) },
+                enabled = selectedInterfaceId != -1 && !commState.isProbingMassStorage,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (commState.isProbingMassStorage) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Transmitting SCSI CBW...")
+                } else {
+                    Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Probe Mass Storage")
+                }
+            }
+
+            commState.msdProbeResult?.let { result ->
+                Spacer(modifier = Modifier.height(16.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "Probe Output Details (Interface ${result.interfaceId})",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = if (result.behavesAsMsd) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                if (result.errorDetails != null) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = result.errorDetails,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        DetailRow(label = "Behaves as Mass Storage", value = if (result.behavesAsMsd) "YES (SCSI Validated)" else "NO")
+                        DetailRow(label = "Vendor", value = result.vendor.ifEmpty { "N/A" })
+                        DetailRow(label = "Product", value = result.product.ifEmpty { "N/A" })
+                        DetailRow(label = "Revision", value = result.revision.ifEmpty { "N/A" })
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Raw Response:",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                        Surface(
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = result.rawHexResponse,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.padding(8.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

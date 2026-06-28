@@ -16,7 +16,9 @@ data class UsbCommunicationUiState(
     val stats: UsbTransportStats = UsbTransportStats(),
     val isProcessing: Boolean = false,
     val lastResult: String = "",
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val isProbingMassStorage: Boolean = false,
+    val msdProbeResult: com.example.core.usb.MsdProbeResult? = null
 ) : UiState
 
 /**
@@ -49,6 +51,7 @@ class UsbCommunicationViewModel(
     fun startSession() {
         val success = communicationRepository.startSession()
         if (success) {
+            setState { copy(msdProbeResult = null) }
             sendEvent(UsbCommunicationUiEvent.ShowSnackbar("Transport session established successfully"))
         } else {
             sendEvent(UsbCommunicationUiEvent.ShowSnackbar("Failed to establish session. Check connection."))
@@ -60,7 +63,29 @@ class UsbCommunicationViewModel(
      */
     fun endSession() {
         communicationRepository.endSession()
+        setState { copy(msdProbeResult = null) }
         sendEvent(UsbCommunicationUiEvent.ShowSnackbar("Transport session closed."))
+    }
+
+    /**
+     * Triggers a SCSI INQUIRY probe over the specified Mass Storage interface.
+     */
+    fun probeMassStorage(interfaceId: Int) {
+        setState { copy(isProbingMassStorage = true, msdProbeResult = null) }
+        viewModelScope.launch {
+            val result = communicationRepository.probeMassStorage(interfaceId)
+            setState {
+                copy(
+                    isProbingMassStorage = false,
+                    msdProbeResult = result
+                )
+            }
+            if (result.behavesAsMsd) {
+                sendEvent(UsbCommunicationUiEvent.ShowSnackbar("Mass Storage probe succeeded on interface $interfaceId!"))
+            } else {
+                sendEvent(UsbCommunicationUiEvent.ShowSnackbar("Mass Storage probe failed: ${result.errorDetails ?: "Invalid signature"}"))
+            }
+        }
     }
 
     /**

@@ -1,5 +1,6 @@
 package com.example.domain.repository
 
+import com.example.core.usb.MsdProbeResult
 import com.example.core.usb.transport.UsbTransferResult
 import com.example.core.usb.transport.UsbTransportStats
 import kotlinx.coroutines.flow.StateFlow
@@ -8,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
  * Repository handling protocol-agnostic, generic USB bulk and control packet transmissions.
  */
 interface UsbCommunicationRepository {
+
     /**
      * Exposes live stream of low-level USB transfer stats.
      */
@@ -70,4 +72,9 @@ interface UsbCommunicationRepository {
      * Retrieves the parsed info of the active device.
      */
     fun getDeviceInfo(): com.example.core.usb.UsbDeviceInfo?
+
+    /**
+     * Probes an active USB Mass Storage interface using standard CBW and SCSI INQUIRY.
+     */
+    suspend fun probeMassStorage(interfaceId: Int): com.example.core.usb.MsdProbeResult
 }
