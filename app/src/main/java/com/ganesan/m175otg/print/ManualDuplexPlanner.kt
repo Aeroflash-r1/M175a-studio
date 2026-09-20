@@ -12,12 +12,15 @@ import com.ganesan.m175otg.usb.UsbPrinterConnection
  *
  * Result: the stack comes out collated 1|2, 3|4, 5|6…
  *
- * LCD PROMPT (fixed): the flip instruction is pushed to the printer's own
- * display **after pass 1 finishes and before pass 2 starts** — as its own
- * standalone PJL `RDYMSG` job. The old code embedded it in pass 1's PCL XL
- * session, so it (a) appeared while side 1 was still printing and (b) was
- * wiped by that session's own close — the panel therefore never showed it
- * at the moment the user had to flip.
+ * LCD PROMPT (fixed twice): the flip instruction is pushed to the printer's
+ * own display as its own standalone PJL `RDYMSG` job — but ONLY after the
+ * engine has actually finished printing side 1. Transfer-done is not
+ * printed-done: pushing RDYMSG the instant the USB bulk transfer finishes
+ * lands while the panel still shows the job status ("Printing document"),
+ * so the message never becomes visible and the phone prompt fires before
+ * the pages are even in the tray. Windows waits for job-end first — we now
+ * do the same via [waitForEngineIdle], which polls the BIDI status channel
+ * until the panel reports Ready (bounded by a timeout, then we proceed).
  */
 object ManualDuplexPlanner {
 
@@ -34,10 +37,23 @@ object ManualDuplexPlanner {
     const val LCD_FLIP = "FLIP STACK AND RELOAD"
 
     /**
-     * Full two-pass duplex job over USB. Between passes [onFlipPrompt] is
-     * called and must suspend until the user confirms the reinsert.
-     * Returns the transmit result of the last pass (Cancelled if the user
-     * pressed Cancel at any point).
+     * True when a ProductStatusDyn LCD string means the engine is done and
+     * the panel will actually show a RDYMSG (Ready/Sleep/Idle/PowerSave).
+     * Anything job-like (Printing/Processing/Copying/Warming/Calibrating…)
+     * or unknown keeps us waiting — the deadline bounds that.
+     */
+    fun isEngineIdle(lcdStatus: String): Boolean {
+        val s = lcdStatus.lowercase()
+        return s.contains("ready") || s.contains("sleep") ||
+                s.contains("idle") || s.contains("power save")
+    }
+
+    /**
+     * Full two-pass duplex job over USB. Between passes the engine is given
+     * time to really finish side 1 ([waitForEngineIdle]), and only then is
+     * [onFlipPrompt] called — it must suspend until the user confirms.
+     * [waitForEngineIdle] returns false when the user cancelled during the
+     * wait. Returns the transmit result of the last pass.
      */
     suspend fun execute(
         usb: UsbPrinterConnection,
@@ -49,6 +65,8 @@ object ManualDuplexPlanner {
         onProgress: (String) -> Unit,
         onFlipPrompt: suspend () -> Unit,
         paper: Paper = Paper.A4,
+        waitForEngineIdle: (suspend (passPages: Int, passLabel: String) -> Boolean) =
+            { _, _ -> true },
     ): PrintTransmitter.Result {
         val p = plan(pagesJpeg.size)
 
@@ -62,6 +80,14 @@ object ManualDuplexPlanner {
         val r1 = transmit(usb, s1)
         if (r1 is PrintTransmitter.Result.Cancelled) return r1
         if (r1 is PrintTransmitter.Result.Failed) return r1
+
+        // Transfer done is NOT printed done: wait until the engine parks at
+        // Ready, otherwise the RDYMSG below lands on a busy panel and never
+        // shows (the Windows-parity fix for "no text on printer display").
+        if (!waitForEngineIdle(p.pass1.size, "Side 1")) {
+            runCatching { transmit(usb, PclxlPage.lcdMessageBytes("")) }
+            return PrintTransmitter.Result.Cancelled(0)
+        }
 
         // Now the paper is in the tray and the user must flip it: light the
         // printer's own display BEFORE asking, so the panel and the phone
@@ -107,6 +133,8 @@ object ManualDuplexPlanner {
         onProgress: (String) -> Unit,
         onFlipPrompt: suspend () -> Unit,
         paper: Paper = Paper.A4,
+        waitForEngineIdle: (suspend (passPages: Int, passLabel: String) -> Boolean) =
+            { _, _ -> true },
     ): PrintTransmitter.Result {
         val sheets = PageLayout.bookletSheets(pagesJpeg.size)
 
@@ -134,6 +162,12 @@ object ManualDuplexPlanner {
         )
         val r1 = transmit(usb, s1)
         if (r1 !is PrintTransmitter.Result.Ok) return r1
+
+        // Same Windows-parity wait as duplex: transfer done != printed done.
+        if (!waitForEngineIdle(sheets.size, "Side 1")) {
+            runCatching { transmit(usb, PclxlPage.lcdMessageBytes("")) }
+            return PrintTransmitter.Result.Cancelled(0)
+        }
 
         runCatching { transmit(usb, PclxlPage.lcdMessageBytes(LCD_FLIP)) }
         onFlipPrompt()

@@ -1,0 +1,7 @@
+# M175 Bridge runtime dependencies (installed by install.bat into venv).
+# Tools under tools/ additionally use `requests` (included below).
+PyMuPDF>=1.23      # fitz: PDF render/split for spooler + duplex passes
+Pillow>=10         # JPEG encode/decode for scan + GDI paths
+pywin32>=306       # WinSpool RAW/GDI printing + WIA scan COM (Windows only)
+zeroconf>=0.131    # mDNS advertisement (_ipp/_uscan/_http)
+requests>=2.31      # HTTP helpers used by tools/

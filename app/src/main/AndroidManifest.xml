@@ -12,6 +12,14 @@
 
     <!-- Only needed for the optional Wi-Fi/IPP mode -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Phone-bridge host mode: show our LAN IP + advertise IPP/eSCL via mDNS -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Background hosting: foreground service + wake lock -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:label="M175 OTG Print"
@@ -57,6 +65,12 @@
                 <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
+
+        <!-- Phone bridge host: background IPP/eSCL server owning the USB claim -->
+        <service
+            android:name=".net.PhoneBridgeService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
         <!-- System printing: appears in EVERY app's native Print dialog -->
         <service

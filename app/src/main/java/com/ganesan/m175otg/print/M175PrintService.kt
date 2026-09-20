@@ -157,7 +157,10 @@ class M175PrintService : PrintService() {
             val paper = paperFor(info.attributes)
             val (sheetW, sheetH) = paper.pagePx(RENDER_DPI, false)
 
-            // Flatten selected pages x copies into the ordered page plan.
+            // Flatten selected pages into the ordered page plan. Copies are
+            // handled PRINTER-SIDE via @PJL SET COPIES (one render per page,
+            // engine repeats) — old code re-rendered + re-streamed each page
+            // N times over slow OTG bulk.
             data class Plan(val pageInDoc: Int, val w: Int, val h: Int)
             val plan = ArrayList<Plan>()
             ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
@@ -167,11 +170,7 @@ class M175PrintService : PrintService() {
                             p + 1 >= rg.start && p + 1 <= rg.end
                         }
                         if (selected) {
-                            r.openPage(p).use { pg ->
-                                repeat(copies) {
-                                    plan.add(Plan(p, sheetW, sheetH))
-                                }
-                            }
+                            plan.add(Plan(p, sheetW, sheetH))
                         }
                     }
                 }
@@ -184,6 +183,7 @@ class M175PrintService : PrintService() {
             val res = PrintTransmitter.sendPages(
                 conn, RENDER_DPI, mono, "SYSTEM-PRINT",
                 paper = paper,
+                copies = copies,
                 source = { _ ->
                     if (cancelled || JobControl.isCancelled) null
                     else {

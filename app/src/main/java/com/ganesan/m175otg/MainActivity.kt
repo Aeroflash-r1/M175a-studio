@@ -7,7 +7,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color as GColor
-import android.graphics.Paint
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Build
@@ -30,10 +29,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Scanner
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
+import com.ganesan.m175otg.net.BridgeClient
+import com.ganesan.m175otg.net.DeviceIp
+import com.ganesan.m175otg.net.PhoneBridgeService
+import com.ganesan.m175otg.print.MonoRaster
+import com.ganesan.m175otg.print.PreviewHelper
+import androidx.core.content.ContextCompat
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,12 +58,10 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.IntentCompat
 import androidx.lifecycle.lifecycleScope
 import com.ganesan.m175otg.print.JobControl
-import com.ganesan.m175otg.print.M175PrintService
 import com.ganesan.m175otg.print.ManualDuplexPlanner
 import com.ganesan.m175otg.print.PageLayout
 import com.ganesan.m175otg.print.PagePlacement
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import com.ganesan.m175otg.print.Paper
 import com.ganesan.m175otg.print.PageRenderer
 import com.ganesan.m175otg.print.PrintConnectionBridge
@@ -96,6 +104,117 @@ class MainActivity : ComponentActivity() {
     // -------- print settings
     private var printDpi by mutableStateOf(600)
     private var grayscale by mutableStateOf(false)
+    /** Windows-speed 1-bit RLE mono (default ON for greyscale). */
+    private var fastMono by mutableStateOf(true)
+    private var ditherMono by mutableStateOf(false)
+
+    // -------- connection: 0 = USB OTG direct, 1 = Wi-Fi via PC bridge
+    private var connMode by mutableIntStateOf(0)
+    private var bridgeHost by mutableStateOf("192.168.137.1")
+    private var bridgePort by mutableStateOf(8080)
+    private var bridgeStatusText by mutableStateOf("Not tested yet")
+
+    // -------- print preview (doc preview before printing)
+    private var showPreview by mutableStateOf(false)
+    private var previewTitle by mutableStateOf("")
+    private var previewPlanText by mutableStateOf("")
+    private var previewObj: PreviewHelper.Preview? by mutableStateOf(null)
+    private var pendingPreviewPdf: File? = null
+    private var pendingPreviewDuplex: Boolean = false
+    private var pendingPreviewUriStr: String? = null
+
+    private fun bridge(): BridgeClient = BridgeClient(bridgeHost.trim(), bridgePort)
+    private fun useWifi(): Boolean = connMode == 1
+
+    // ------------------------------------------------- phone bridge hosting
+    // Hosting itself lives in PhoneBridgeService (foreground service with
+    // wake/Wi-Fi locks + FIFO engine queue) — the activity only starts/stops
+    // it and mirrors its state, so hosting survives screen-off and swiping
+    // the app away.
+    private var phoneBridgeRunning by mutableStateOf(false)
+    private var phoneBridgeInfo by mutableStateOf("Stopped")
+
+    private val bridgeNotifPerm = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startPhoneBridgeService()
+        else Toast.makeText(this,
+            "Notifications needed for the hosting indicator — then tap Host again",
+            Toast.LENGTH_LONG).show()
+    }
+
+    /** Start/stop hosting the Wi-Fi bridge on THIS phone (old-phone role). */
+    private fun togglePhoneBridge() {
+        if (PhoneBridgeService.isHosting || phoneBridgeRunning) {
+            val stop = Intent(this, PhoneBridgeService::class.java)
+                .setAction(PhoneBridgeService.ACTION_STOP)
+            startService(stop)
+            lifecycleScope.launch {
+                kotlinx.coroutines.delay(600)
+                syncBridgeUi()
+                // Reclaim our own USB claim now the service released it.
+                tryConnect()
+            }
+            phoneBridgeRunning = false
+            phoneBridgeInfo = "Stopping…"
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 33 && !Notifier.canNotify(this)) {
+            bridgeNotifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
+            return
+        }
+        startPhoneBridgeService()
+    }
+
+    private fun startPhoneBridgeService() {
+        if (!usb.isOpen) {
+            Toast.makeText(this, "Plug the printer via OTG first",
+                Toast.LENGTH_SHORT).show()
+            tryConnect()
+            return
+        }
+        // Hand the single USB claim to the service: drop ours first so its
+        // claimInterface() cannot fail or steal mid-job.
+        PrintConnectionBridge.unregisterAppConnection(usb)
+        usb.close()
+        val intent = Intent(this, PhoneBridgeService::class.java)
+            .setAction(PhoneBridgeService.ACTION_START)
+            .putExtra(PhoneBridgeService.EXTRA_PORT, bridgePort)
+        ContextCompat.startForegroundService(this, intent)
+        val ip = DeviceIp.best() ?: "this-phone"
+        phoneBridgeRunning = true
+        phoneBridgeInfo = "Starting on http://$ip:$bridgePort…"
+        lifecycleScope.launch {
+            kotlinx.coroutines.delay(2000)
+            syncBridgeUi()
+            if (!PhoneBridgeService.isHosting) {
+                // Start failed (no USB permission, port busy…) — take USB back.
+                phoneBridgeRunning = false
+                tryConnect()
+            }
+        }
+    }
+
+    /** Mirrors service state into Setup UI (called on resume + after toggles). */
+    private fun syncBridgeUi() {
+        phoneBridgeRunning = PhoneBridgeService.isHosting
+        phoneBridgeInfo = when {
+            PhoneBridgeService.isHosting -> {
+                val url = PhoneBridgeService.servingUrl ?: "starting…"
+                val extra = listOfNotNull(
+                    PhoneBridgeService.currentJob,
+                    if (PhoneBridgeService.queueDepth > 0)
+                        "${PhoneBridgeService.queueDepth} waiting" else null,
+                    if (PhoneBridgeService.jobsServed > 0)
+                        "${PhoneBridgeService.jobsServed} served" else null,
+                ).joinToString(" • ")
+                "Serving on $url" + if (extra.isNotEmpty()) " — $extra" else "" +
+                        ". Runs in background: screen can sleep, app can be swiped away."
+            }
+            PhoneBridgeService.lastError != null ->
+                "Failed: ${PhoneBridgeService.lastError}"
+            else -> "Stopped"
+        }
+    }
 
     // -------- scan settings (persisted)
     private val prefs by lazy { getSharedPreferences("m175", MODE_PRIVATE) }
@@ -182,6 +301,12 @@ class MainActivity : ComponentActivity() {
         usb = UsbPrinterConnection(this)
         PrintConnectionBridge.registerAppConnection(usb)
         scanDpi = prefs.getInt("scanDpi", 300)
+        if (scanDpi == 1200) {
+            // 1200 dpi optical step removed: unusably slow (~15+ min/page),
+            // huge RAM (530 MB ARGB), marginal gain over 600 on this engine.
+            scanDpi = 600
+            prefs.edit().putInt("scanDpi", 600).apply()
+        }
         if (scanDpi < 200) scanDpi = 200        // 150 dpi was removed (useless)
         scanGray = prefs.getBoolean("scanGray", false)
         scanLineart = prefs.getBoolean("scanLineart", false)
@@ -194,6 +319,11 @@ class MainActivity : ComponentActivity() {
         // print settings persist too (last-used quality — Windows-driver parity)
         printDpi = prefs.getInt("printDpi", 300)
         grayscale = prefs.getBoolean("printGray", false)
+        fastMono = prefs.getBoolean("fastMono", true)
+        ditherMono = prefs.getBoolean("ditherMono", false)
+        connMode = prefs.getInt("connMode", 0)
+        bridgeHost = prefs.getString("bridgeHost", "192.168.137.1") ?: "192.168.137.1"
+        bridgePort = prefs.getInt("bridgePort", 8080)
         paperIdx = Paper.fromSaved(prefs.getString("paperName", null)).ordinal
         setContent { M175App() }
         tryConnect()
@@ -207,16 +337,52 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        syncBridgeUi()
         tryConnect()
     }
 
     override fun onDestroy() {
-        PrintConnectionBridge.unregisterAppConnection(usb)
-        usb.close()
+        // Hosting (if active) belongs to PhoneBridgeService and outlives the
+        // activity — never stop it here. Only release OUR claim when we own
+        // it (while hosting, the service owns the claim).
+        if (!PhoneBridgeService.isHosting) {
+            PrintConnectionBridge.unregisterAppConnection(usb)
+            usb.close()
+        }
         super.onDestroy()
     }
 
     // ------------------------------------------------------------------ UI
+
+    /**
+     * Wrapping chip group — the cutoff fix.
+     *
+     * Root cause of the border cutoff: plain Rows with 4+ FilterChips and
+     * 8.dp spacing overflow a 360.dp phone (chips never shrink, so the last
+     * chip draws past the card edge and clips). FlowRow wraps to a second
+     * line instead, so nothing ever draws outside the card on any width.
+     */
+    @OptIn(ExperimentalLayoutApi::class)
+    @Composable
+    private fun ChipFlow(content: @Composable () -> Unit) {
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) { content() }
+    }
+
+    @Composable
+    private fun SectionTitle(text: String) {
+        Text(text, style = MaterialTheme.typography.titleSmall)
+    }
+
+    @Composable
+    private fun HelperText(text: String) {
+        Text(text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
 
     @Composable
     private fun M175App() {
@@ -239,17 +405,21 @@ class MainActivity : ComponentActivity() {
                             icon = { Icon(Icons.Filled.Scanner, null) }, label = { Text("Scan") })
                         NavigationBarItem(selected = tab == 2, onClick = { tab = 2 },
                             icon = { Icon(Icons.Filled.Info, null) }, label = { Text("Printer") })
+                        NavigationBarItem(selected = tab == 3, onClick = { tab = 3 },
+                            icon = { Icon(Icons.Filled.Settings, null) }, label = { Text("Setup") })
                     }
                 }
             ) { pad ->
-                Box(Modifier.padding(pad)) {
+                Box(Modifier.padding(pad).fillMaxSize()) {
                     when (tab) {
                         0 -> PrintTab()
                         1 -> ScanTab()
                         2 -> PrinterTab()
+                        3 -> SetupTab()
                     }
                 }
                 if (showFlipDialog) FlipDialog()
+                if (showPreview) PreviewDialog()
                 if (busy) BusyOverlay()
             }
         }
@@ -263,10 +433,34 @@ class MainActivity : ComponentActivity() {
         ) {
             Text("Print", style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold)
+            // Connection banner: one glance shows USB vs Wi-Fi path.
+            Card(Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (useWifi())
+                        MaterialTheme.colorScheme.secondaryContainer
+                    else MaterialTheme.colorScheme.surfaceVariant)) {
+                Row(Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(10.dp).background(
+                        if (useWifi()) Color(0xFF1565C0)
+                        else if (connected) Color(0xFF2E7D32)
+                        else MaterialTheme.colorScheme.error,
+                        RoundedCornerShape(5.dp)))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (useWifi()) "Wi-Fi via PC bridge ($bridgeHost:$bridgePort)"
+                        else if (connected) "USB OTG — M175a connected"
+                        else "USB OTG — printer not connected",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f, fill = false),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis)
+                }
+            }
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Quality", style = MaterialTheme.typography.titleSmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SectionTitle("Quality")
+                    ChipFlow {
                         FilterChip(selected = printDpi == 300,
                             onClick = {
                                 printDpi = 300
@@ -278,34 +472,64 @@ class MainActivity : ComponentActivity() {
                                 prefs.edit().putInt("printDpi", 600).apply()
                             }, label = { Text("Best 600") })
                     }
-                    FilterChip(selected = grayscale,
-                        onClick = {
-                            grayscale = !grayscale
-                            prefs.edit().putBoolean("printGray", grayscale).apply()
-                        },
-                        label = { Text("Greyscale") })
+                    HelperText("Draft 300 is ~4x faster with identical text quality. " +
+                            "Best 600 for photos/fine graphics.")
+                    ChipFlow {
+                        FilterChip(selected = grayscale,
+                            onClick = {
+                                grayscale = !grayscale
+                                prefs.edit().putBoolean("printGray", grayscale).apply()
+                            },
+                            label = { Text(if (grayscale) "Greyscale ✓" else "Greyscale") })
+                    }
+                    if (grayscale) {
+                        ChipFlow {
+                            FilterChip(selected = fastMono,
+                                onClick = {
+                                    fastMono = !fastMono
+                                    prefs.edit().putBoolean("fastMono", fastMono).apply()
+                                },
+                                label = { Text("Fast B&W 1-bit (Windows-speed)") })
+                        }
+                        HelperText("Fast B&W sends 1-bit RLE pages (5-10x smaller, " +
+                                "no printer JPEG decode) — multi-page documents " +
+                                "print at engine speed like the Windows driver. " +
+                                "Turn off only for gray photos.")
+                        if (fastMono) {
+                            ChipFlow {
+                                FilterChip(selected = ditherMono,
+                                    onClick = {
+                                        ditherMono = !ditherMono
+                                        prefs.edit().putBoolean("ditherMono", ditherMono).apply()
+                                    },
+                                    label = { Text("Photo dither") })
+                            }
+                        }
+                    }
                     HorizontalDivider()
-                    Text("Document", style = MaterialTheme.typography.titleSmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SectionTitle("Document")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
                             value = copies.toString(),
                             onValueChange = { copies = it.toIntOrNull()?.coerceIn(1, 99) ?: 1 },
                             label = { Text("Copies") },
+                            singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             modifier = Modifier.weight(1f))
                         OutlinedTextField(
                             value = pageRangeExpr,
                             onValueChange = { pageRangeExpr = it.take(40) },
                             label = { Text("Pages") },
+                            singleLine = true,
                             placeholder = { Text("1-3, 5, 8-10") },
                             modifier = Modifier.weight(2f))
                     }
-                    Text("Pages: ranges like 1-3, 5 or empty for all",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    HelperText("Pages: ranges like 1-3, 5 or empty for all")
                     HorizontalDivider()
-                    Text("Page order", style = MaterialTheme.typography.titleSmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SectionTitle("Page order")
+                    ChipFlow {
                         FilterChip(selected = parityMode == 0,
                             onClick = { parityMode = 0 }, label = { Text("All") })
                         FilterChip(selected = parityMode == 1,
@@ -316,12 +540,14 @@ class MainActivity : ComponentActivity() {
                             onClick = { reverseOrder = !reverseOrder },
                             label = { Text("Reverse") })
                     }
-                    FilterChip(selected = skipBlank,
-                        onClick = { skipBlank = !skipBlank },
-                        label = { Text("Skip blank pages") })
+                    ChipFlow {
+                        FilterChip(selected = skipBlank,
+                            onClick = { skipBlank = !skipBlank },
+                            label = { Text("Skip blank pages") })
+                    }
                     HorizontalDivider()
-                    Text("Layout", style = MaterialTheme.typography.titleSmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SectionTitle("Layout")
+                    ChipFlow {
                         FilterChip(selected = nUpMode == 1 && !bookletMode,
                             onClick = { nUpMode = 1; bookletMode = false },
                             label = { Text("Normal") })
@@ -336,11 +562,12 @@ class MainActivity : ComponentActivity() {
                             label = { Text("Booklet") })
                     }
                     HorizontalDivider()
-                    Text("Page layout", style = MaterialTheme.typography.titleSmall)
-                    Text("Paper size", style = MaterialTheme.typography.bodySmall)
+                    SectionTitle("Page layout")
+                    HelperText("Paper size")
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.horizontalScroll(rememberScrollState())
+                        modifier = Modifier.fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
                     ) {
                         Paper.entries.forEachIndexed { i, p ->
                             FilterChip(selected = paperIdx == i,
@@ -350,8 +577,9 @@ class MainActivity : ComponentActivity() {
                                 },
                                 label = { Text(p.label) })
                         }
+                        Spacer(Modifier.width(4.dp))
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ChipFlow {
                         FilterChip(selected = placeFit == 0,
                             onClick = { placeFit = 0; savePlace() },
                             label = { Text("Fit page") })
@@ -365,9 +593,8 @@ class MainActivity : ComponentActivity() {
                             onClick = { placeOrient = if (placeOrient == 1) 0 else 1; savePlace() },
                             label = { Text("Landscape") })
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Margins:", style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.align(Alignment.CenterVertically))
+                    HelperText("Margins")
+                    ChipFlow {
                         listOf(0 to "None", 1 to "10mm", 2 to "20mm", 3 to "25mm")
                             .forEach { (v, lbl) ->
                                 FilterChip(selected = placeMargin == v,
@@ -375,50 +602,73 @@ class MainActivity : ComponentActivity() {
                                     label = { Text(lbl) })
                             }
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically) {
-                        Text("Position:", style = MaterialTheme.typography.bodySmall)
-                        // 3x3 grid picker (actual-size mode nudges the image)
-                        Column {
+                    // Position picker — rebuilt. Old flaws: cell size jumped
+                    // 26.dp<->30.dp on every tap (grid reflowed), 26.dp missed
+                    // the 48.dp touch target, and the side-by-side
+                    // "Position:" + grid + "(actual-size mode)" Row overflowed
+                    // narrow phones. Now: fixed 44.dp cells, no size jump,
+                    // check icon on the selected cell, stacked layout.
+                    HelperText("Position (actual-size mode)")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Start) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             for (row in 0..2) {
-                                Row {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     for (col in 0..2) {
                                         val cell = row * 3 + col
                                         val selected = placePos == cell
+                                        val label = when (cell) {
+                                            0 -> "Top left"; 1 -> "Top center"
+                                            2 -> "Top right"; 3 -> "Middle left"
+                                            4 -> "Center"; 5 -> "Middle right"
+                                            6 -> "Bottom left"; 7 -> "Bottom center"
+                                            else -> "Bottom right"
+                                        }
                                         Box(
-                                            Modifier
-                                                .size(if (selected) 30.dp else 26.dp)
+                                            contentAlignment = Alignment.Center,
+                                            modifier = Modifier
+                                                .size(44.dp)
+                                                .clip(RoundedCornerShape(12.dp))
                                                 .background(
-                                                    when {
-                                                        selected -> MaterialTheme.colorScheme.primary
-                                                        // outline tone so the grid is
-                                                        // visible even on a white card
-                                                        else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 1f)
-                                                    },
-                                                    RoundedCornerShape(4.dp))
+                                                    if (selected)
+                                                        MaterialTheme.colorScheme.primaryContainer
+                                                    else MaterialTheme.colorScheme.surfaceVariant,
+                                                    RoundedCornerShape(12.dp))
                                                 .border(
-                                                    if (selected) 2.dp else 1.dp,
-                                                    if (selected) MaterialTheme.colorScheme.primary
-                                                    else MaterialTheme.colorScheme.outline,
-                                                    RoundedCornerShape(4.dp))
+                                                    width = if (selected) 2.dp else 1.dp,
+                                                    color = if (selected)
+                                                        MaterialTheme.colorScheme.primary
+                                                    else MaterialTheme.colorScheme.outlineVariant,
+                                                    shape = RoundedCornerShape(12.dp))
                                                 .clickable {
                                                     placePos = cell; savePlace()
                                                 }
-                                                .padding(2.dp))
-                                        Spacer(Modifier.width(4.dp))
+                                                .semantics {
+                                                    contentDescription = label +
+                                                            if (selected) ", selected" else ""
+                                                }
+                                        ) {
+                                            if (selected) {
+                                                Icon(Icons.Filled.Check,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                    modifier = Modifier.size(20.dp))
+                                            }
+                                        }
                                     }
                                 }
-                                Spacer(Modifier.height(4.dp))
                             }
                         }
-                        Text("(actual-size mode)",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Button(onClick = {
                         pendingDuplex = false
                         pdfPicker.launch(arrayOf("application/pdf"))
-                    }, modifier = Modifier.fillMaxWidth()) { Text("Print PDF") }
+                    }, modifier = Modifier.fillMaxWidth()) { Text("Preview & Print PDF") }
+                    Text("Every PDF shows a thumbnail preview before printing — " +
+                            "confirm pages, copies and quality first.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                     OutlinedButton(onClick = {
                         imagePicker.launch("image/*")
                     }, modifier = Modifier.fillMaxWidth()) { Text("Print images") }
@@ -426,8 +676,6 @@ class MainActivity : ComponentActivity() {
                         pendingDuplex = true
                         pdfPicker.launch(arrayOf("application/pdf"))
                     }, modifier = Modifier.fillMaxWidth()) { Text("Manual duplex") }
-                    OutlinedButton(onClick = { printTestPage() },
-                        modifier = Modifier.fillMaxWidth()) { Text("Print test page") }
                     OutlinedButton(onClick = { cancelJob() },
                         modifier = Modifier.fillMaxWidth()) { Text("Cancel job") }
                     if (jobHistory.isNotEmpty()) {
@@ -504,22 +752,23 @@ class MainActivity : ComponentActivity() {
             }
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Resolution", style = MaterialTheme.typography.titleSmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf(200, 300, 600, 1200).forEach { d ->
+                    SectionTitle("Resolution")
+                    ChipFlow {
+                        listOf(200, 300, 600).forEach { d ->
                             FilterChip(selected = scanDpi == d,
                                 onClick = { scanDpi = d; prefs.edit().putInt("scanDpi", d).apply() },
                                 label = { Text("$d dpi") })
                         }
                     }
-                    Text("200 is resampled from the 300 dpi native step. " +
-                            "600/1200 use the glass at full optical resolution " +
-                            "(feeder scans at 300).",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    HelperText("Native sensor step is 300 dpi (200 is resampled from " +
+                            "it). 600 uses the glass at full optical resolution " +
+                            "(feeder scans at 300). 1200 was removed — 15+ min/page " +
+                            "with no visible gain on this engine." +
+                            if (useWifi()) " Wi-Fi scans go through the PC bridge (WIA)."
+                            else "")
                     HorizontalDivider()
-                    Text("Color", style = MaterialTheme.typography.titleSmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SectionTitle("Color")
+                    ChipFlow {
                         FilterChip(selected = !scanGray && !scanLineart,
                             onClick = { scanGray = false; scanLineart = false
                                 prefs.edit().putBoolean("scanGray", false)
@@ -537,14 +786,16 @@ class MainActivity : ComponentActivity() {
                             label = { Text("Black & white") })
                     }
                     HorizontalDivider()
-                    if (scanCaps?.adfSupported == true) {
-                        FilterChip(selected = adfMode,
-                            onClick = { adfMode = !adfMode; prefs.edit().putBoolean("adf", adfMode).apply() },
-                            label = { Text("Feeder (ADF)") })
+                    ChipFlow {
+                        if (scanCaps?.adfSupported == true) {
+                            FilterChip(selected = adfMode,
+                                onClick = { adfMode = !adfMode; prefs.edit().putBoolean("adf", adfMode).apply() },
+                                label = { Text("Feeder (ADF)") })
+                        }
+                        FilterChip(selected = pdfMode,
+                            onClick = { pdfMode = !pdfMode },
+                            label = { Text("Save as PDF") })
                     }
-                    FilterChip(selected = pdfMode,
-                        onClick = { pdfMode = !pdfMode },
-                        label = { Text("Save as PDF") })
                     Button(onClick = { scanFlow() }, modifier = Modifier.fillMaxWidth()) {
                         Text(if (adfMode) "Scan from feeder" else "Scan from glass")
                     }
@@ -572,9 +823,12 @@ class MainActivity : ComponentActivity() {
                             if (connected) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
                             RoundedCornerShape(5.dp)))
                         Spacer(Modifier.width(8.dp))
-                        Text(status, style = MaterialTheme.typography.bodyMedium)
+                        Text(status, style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f, fill = false),
+                            maxLines = 3, overflow = TextOverflow.Ellipsis)
                     }
-                    Button(onClick = { usb.close(); tryConnect() }) { Text("Reconnect") }
+                    Button(onClick = { usb.close(); tryConnect() },
+                        modifier = Modifier.fillMaxWidth()) { Text("Reconnect") }
                 }
             }
             scannerWarning?.let { ScannerWarningCard(it) }
@@ -681,6 +935,207 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
+    private fun SetupTab() {
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text("Setup", style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold)
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    SectionTitle("Connection")
+                    ChipFlow {
+                        FilterChip(selected = connMode == 0,
+                            onClick = {
+                                connMode = 0
+                                prefs.edit().putInt("connMode", 0).apply()
+                                tryConnect()
+                            }, label = { Text("USB OTG") })
+                        FilterChip(selected = connMode == 1,
+                            onClick = {
+                                connMode = 1
+                                prefs.edit().putInt("connMode", 1).apply()
+                            }, label = { Text("Wi-Fi bridge") })
+                    }
+                    Text("USB OTG: this phone is cabled to the printer. Wi-Fi bridge: " +
+                            "the printer lives on a PC bridge or an old phone hosting " +
+                            "the bridge — this phone then prints & scans wirelessly.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            if (connMode == 1) {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        SectionTitle("Bridge address (PC or old phone)")
+                        OutlinedTextField(
+                            value = bridgeHost,
+                            onValueChange = {
+                                bridgeHost = it.take(64)
+                                prefs.edit().putString("bridgeHost", bridgeHost).apply()
+                            },
+                            label = { Text("Bridge address") },
+                            placeholder = { Text("192.168.137.1") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(
+                            value = bridgePort.toString(),
+                            onValueChange = {
+                                bridgePort = it.toIntOrNull()?.coerceIn(1, 65535) ?: 8080
+                                prefs.edit().putInt("bridgePort", bridgePort).apply()
+                            },
+                            label = { Text("Port") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth())
+                        Button(onClick = {
+                            setBusy("Testing bridge...")
+                            lifecycleScope.launch {
+                                val ok = withContext(Dispatchers.IO) {
+                                    bridge().testConnection()
+                                }
+                                val st = withContext(Dispatchers.IO) {
+                                    bridge().getStatus()
+                                }
+                                clearBusy()
+                                bridgeStatusText = if (ok) {
+                                    "Connected — bridge says: " +
+                                            "${st?.state ?: "?"} ${st?.detail ?: ""}"
+                                } else {
+                                    "No bridge at $bridgeHost:$bridgePort — " +
+                                            "is run.py serving on the PC, or an old phone hosting?"
+                                }
+                            }
+                        }, modifier = Modifier.fillMaxWidth()) { Text("Test connection") }
+                        Text(bridgeStatusText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        HorizontalDivider()
+                        SectionTitle("Make the printer Wi-Fi in 3 steps")
+                        HelperText("PC way: on the PC run cd windows-bridge, install.bat, " +
+                                "python run.py (:8080).\n" +
+                                "No-PC way: on an old phone open this same Setup screen → " +
+                                "Host bridge on this phone.\n" +
+                                "Then: join the same Wi-Fi/hotspot, enter the bridge address " +
+                                "above, Test, then Print/Scan — PDFs, images, greyscale, " +
+                                "preview and copies all work over Wi-Fi.")
+                    }
+                }
+            }
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    SectionTitle("Phone bridge — no PC needed")
+                    HelperText("Leave THIS phone plugged into the printer via OTG " +
+                            "and it becomes the Wi-Fi printer for other phones. " +
+                            "Runs as a background service: the screen can sleep and " +
+                            "the app can be swiped away. Keep the phone charging. " +
+                            "Uses your current Quality settings; remote jobs queue " +
+                            "FIFO so every phone gets its turn.")
+                    Text(phoneBridgeInfo,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Button(onClick = { togglePhoneBridge() },
+                        modifier = Modifier.fillMaxWidth()) {
+                        Text(if (phoneBridgeRunning) "Stop hosting" else "Host bridge on this phone")
+                    }
+                    HorizontalDivider()
+                    SectionTitle("Second phone connects in 3 steps")
+                    HelperText("1. Join the same Wi-Fi (or this phone's hotspot)\n" +
+                            "2. On the second phone: Setup → Wi-Fi bridge → enter " +
+                            "the address shown above → Test\n" +
+                            "3. Print & scan wirelessly — PDF, images, greyscale, " +
+                            "preview and copies all work. One job at a time.")
+                }
+            }
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Speed tips", style = MaterialTheme.typography.titleSmall)
+                    Text("• Greyscale + Fast B&W 1-bit = engine-speed multi-page text\n" +
+                            "• Draft 300 for documents, Best 600 for photos\n" +
+                            "• Copies print on the engine (one send, not N sends)\n" +
+                            "• Preview every job before it leaves the phone",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun PreviewDialog() {
+        AlertDialog(
+            onDismissRequest = {
+                PreviewHelper.recycle(previewObj)
+                previewObj = null
+                showPreview = false
+            },
+            title = { Text(previewTitle.ifBlank { "Print preview" }) },
+            text = {
+                // Scrollable: on small phones title + 6 thumbs + quality text
+                // overflowed the dialog and clipped the buttons. Cap height
+                // and scroll instead.
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState())) {
+                    Text(previewPlanText, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    val thumbs = previewObj?.thumbs.orEmpty()
+                    if (thumbs.isEmpty()) {
+                        Text("No pages to show.")
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())) {
+                            thumbs.forEachIndexed { i, bmp ->
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Image(bmp.asImageBitmap(), "page ${i + 1}",
+                                        Modifier.width(120.dp).height(160.dp)
+                                            .border(1.dp,
+                                                MaterialTheme.colorScheme.outlineVariant,
+                                                RoundedCornerShape(8.dp))
+                                            .clip(RoundedCornerShape(8.dp)),
+                                        contentScale = ContentScale.Crop)
+                                    Text("p${i + 1}",
+                                        style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                            Spacer(Modifier.width(4.dp))
+                        }
+                        if ((previewObj?.truncated) == true) {
+                            Text("+${(previewObj?.totalPlanned ?: 0) - (previewObj?.shown ?: 0)} more page(s)…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    Text("Quality: ${printDpi}dpi ${if (grayscale) "greyscale" + if (fastMono) " + fast 1-bit" else "" else "color"} · " +
+                            if (useWifi()) "via Wi-Fi bridge" else "via USB OTG",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val pdf = pendingPreviewPdf
+                    val duplex = pendingPreviewDuplex
+                    PreviewHelper.recycle(previewObj)
+                    previewObj = null
+                    showPreview = false
+                    if (pdf != null) executePdfPrint(pdf, duplex)
+                }) { Text("Print now") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    PreviewHelper.recycle(previewObj)
+                    previewObj = null
+                    showPreview = false
+                }) { Text("Cancel") }
+            },
+        )
+    }
+
+    @Composable
     private fun FlipDialog() {
         AlertDialog(
             onDismissRequest = { },
@@ -726,6 +1181,26 @@ class MainActivity : ComponentActivity() {
     // ---------------------------------------------------------- connection
 
     private fun tryConnect() {
+        if (PhoneBridgeService.isHosting) {
+            // The service owns the single USB claim while hosting — a second
+            // claim here would steal it mid-job. Local jobs wait for Stop.
+            status = "Hosting bridge — USB owned by the service"
+            connected = false
+            return
+        }
+        if (useWifi()) {
+            // Wi-Fi mode needs no USB claim — probe the bridge instead.
+            status = "Wi-Fi bridge: ${bridgeHost.trim()}:$bridgePort"
+            connected = false
+            Thread {
+                val st = try { bridge().getStatus() } catch (_: Exception) { null }
+                status = if (st != null) "Wi-Fi bridge: ${st.state} ${st.detail}".trim()
+                else "Wi-Fi bridge unreachable ($bridgeHost:$bridgePort)"
+                connected = st != null
+                if (st != null) refreshBridgeStatus(st)
+            }.start()
+            return
+        }
         Thread {
             val dev = usb.findPrinter()
             if (dev == null) {
@@ -753,7 +1228,25 @@ class MainActivity : ComponentActivity() {
         }.start()
     }
 
+    /** Bridge /api/status JSON -> toner bars + counters (best-effort parse). */
+    private fun refreshBridgeStatus(st: BridgeClient.BridgeStatus) {
+        // Bridge STATUS carries toner/state but not LEDM XML detail; surface
+        // what exists and keep last USB consumables otherwise.
+        usage = usage // unchanged (bridge exposes jobs_sent in status text)
+        status = "Wi-Fi bridge: ${st.state} ${st.detail}".trim()
+    }
+
     private fun refreshStatus() {
+        if (useWifi()) {
+            Thread {
+                val st = try { bridge().getStatus() } catch (_: Exception) { null }
+                if (st != null) {
+                    status = "Wi-Fi bridge: ${st.state} ${st.detail}".trim()
+                    connected = true
+                }
+            }.start()
+            return
+        }
         if (!usb.isOpen) return
         Thread {
             try {
@@ -831,7 +1324,7 @@ class MainActivity : ComponentActivity() {
                     Intent.EXTRA_STREAM, Uri::class.java)
                 if (!uris.isNullOrEmpty()) {
                     intent.removeExtra(Intent.EXTRA_STREAM)
-                    if (usb.isOpen) printImages(uris)
+                    if (useWifi() || usb.isOpen) printImages(uris)
                     else { pendingPrintUri = uris.first(); tryConnect() }
                 }
             }
@@ -841,9 +1334,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Print now if the USB link is up, else connect first and print after. */
+    /** Print now if the link is up, else connect first and print after. */
     private fun queueOrPrint(uri: Uri) {
-        if (usb.isOpen) printIntentUri(uri)
+        if (useWifi() || usb.isOpen) printIntentUri(uri)
         else {
             pendingPrintUri = uri
             tryConnect()
@@ -867,6 +1360,37 @@ class MainActivity : ComponentActivity() {
     /** Print one or more images (gallery/share) — each becomes one page. */
     private fun printImages(uris: List<Uri>) {
         if (!checkReady()) return
+        if (useWifi()) {
+            // Wi-Fi: upload each image as its own IPP job (bridge GDI path).
+            setBusy("Sending images to bridge...")
+            lifecycleScope.launch {
+                try {
+                    JobControl.begin()
+                    var okAll = true
+                    withContext(Dispatchers.IO) {
+                        for (u in uris.take(20)) {
+                            val bytes = contentResolver.openInputStream(u)
+                                ?.use { it.readBytes() } ?: continue
+                            if (!bridge().printImage(bytes, "Android Wi-Fi image")) {
+                                okAll = false
+                            }
+                        }
+                    }
+                    JobControl.end()
+                    if (okAll) Notifier.jobDone(this@MainActivity,
+                        "Images sent (Wi-Fi)", "${uris.size} via bridge")
+                    else Toast.makeText(this@MainActivity,
+                        "Bridge rejected an image", Toast.LENGTH_LONG).show()
+                } catch (e: Exception) {
+                    Toast.makeText(this@MainActivity,
+                        "Wi-Fi images failed: ${e.message}", Toast.LENGTH_LONG).show()
+                } finally {
+                    try { JobControl.end() } catch (_: Exception) {}
+                    clearBusy()
+                }
+            }
+            return
+        }
         setBusy("Rendering images...")
         val pl = placement()
         val (dw, dh) = paper.pagePx(printDpi,
@@ -940,68 +1464,14 @@ class MainActivity : ComponentActivity() {
         }
     } catch (_: Exception) { null }
 
-    private fun printTestPage() {
-        if (!checkReady()) return
-        setBusy("Printing test page...")
-        lifecycleScope.launch {
-            try {
-                JobControl.begin()
-                scanLog("printTestPage: dpi=$printDpi gray=$grayscale")
-                val res = withContext(Dispatchers.IO) {
-                    val bmp = makeTestBitmap()
-                    val page = PageRenderer.renderImage(bmp, printDpi, grayscale, paper)
-                    val stream = PclxlPage.buildStream(
-                        listOf(page.jpeg), page.width, page.height,
-                        dpi = printDpi, grayscale = grayscale, jobName = "OTG-TEST",
-                        paper = paper,
-                    )
-                    scanLog("printTestPage: stream ${stream.size}B (jpeg ${page.jpeg.size}B " +
-                            "${page.width}x${page.height})")
-                    PageRenderer.transmit(usb, stream)
-                }
-                JobControl.end()
-                scanLog("printTestPage: result=$res")
-                when (res) {
-                    is PrintTransmitter.Result.Ok -> Notifier.jobDone(this@MainActivity,
-                        "Test page printed", "Sent ${res.bytesSent / 1024} KB at ${printDpi}dpi")
-                    is PrintTransmitter.Result.Cancelled ->
-                        Toast.makeText(this@MainActivity,
-                            "Job cancelled", Toast.LENGTH_SHORT).show()
-                    is PrintTransmitter.Result.Failed -> {
-                        rescuePrinter()
-                        Toast.makeText(this@MainActivity,
-                            "Print failed: ${res.reason}", Toast.LENGTH_LONG).show()
-                    }
-                }
-            } catch (e: Exception) {
-                scanLog("printTestPage: FAILED ${e.javaClass.simpleName}: ${e.message}")
-                android.util.Log.e("M175", "printTestPage failed", e)
-                Toast.makeText(this@MainActivity,
-                    "Print error: ${e.message}", Toast.LENGTH_LONG).show()
-            } finally { clearBusy() }
-        }
-    }
+    private var pendingPreviewCopies: Int = 1
+    private var pendingPreviewRange: String = ""
 
-    private fun makeTestBitmap(): Bitmap {
-        val w = 600; val h = 848
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp); c.drawColor(GColor.WHITE)
-        val p = Paint().apply { isAntiAlias = true }
-        p.color = GColor.BLACK; p.textSize = 40f
-        c.drawText("M175a test page", 40f, 100f, p)
-        p.textSize = 24f
-        c.drawText("dpi: $printDpi   mode: ${if (grayscale) "gray" else "color"}", 40f, 160f, p)
-        val chips = listOf(GColor.CYAN, GColor.MAGENTA, GColor.YELLOW, GColor.BLACK)
-        chips.forEachIndexed { i, col ->
-            p.color = col
-            c.drawRect((40 + i * 130).toFloat(), 220f,
-                (150 + i * 130).toFloat(), 330f, p)
-        }
-        p.color = GColor.BLACK; p.textSize = 20f
-        for (i in 0..40) c.drawLine(40f, (400 + i * 4).toFloat(), 560f, (400 + i * 4).toFloat(), p)
-        return bmp
-    }
-
+    /**
+     * PREVIEW-FIRST print: copy the PDF, compute the exact page plan
+     * (range/parity/reverse/blank-filter), render low-res thumbnails and
+     * show the confirm dialog. Nothing prints until "Print now".
+     */
     private fun printPdf(uri: Uri, duplex: Boolean, copies: Int = 1,
                          rangeExpr: String = "") {
         if (!checkReady()) return
@@ -1012,7 +1482,13 @@ class MainActivity : ComponentActivity() {
                 "Layout options apply to single-sided printing",
                 Toast.LENGTH_SHORT).show()
         }
-        setBusy(if (duplex) "Duplex job..." else "Rendering...")
+        // Wi-Fi share-intent fast path (no preview): print direct via IPP.
+        // In-app picker always goes through the preview dialog below.
+        setBusy("Preparing preview...")
+        pendingPreviewDuplex = duplex
+        pendingPreviewCopies = if (duplex) 1 else copies
+        pendingPreviewRange = rangeExpr
+        pendingPreviewUriStr = uri.toString()
         lifecycleScope.launch {
             try {
                 val pdfFile = withContext(Dispatchers.IO) {
@@ -1022,6 +1498,88 @@ class MainActivity : ComponentActivity() {
                     }
                     f
                 }
+                val totalPages = withContext(Dispatchers.IO) {
+                    ParcelFileDescriptor.open(pdfFile,
+                        ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
+                        PdfRenderer(fd).use { r -> r.pageCount }
+                    }
+                }
+                val effRange = if (duplex) "" else
+                    if (rangeExpr.isBlank()) pageRangeExpr else rangeExpr
+                val effCopies = if (duplex) 1 else
+                    if (copies == 1) this@MainActivity.copies else copies
+                pendingPreviewCopies = effCopies.coerceIn(1, 99)
+                pendingPreviewRange = effRange
+                var plan = withContext(Dispatchers.IO) {
+                    PageLayout.filterParity(
+                        if (effRange.isBlank()) (1..totalPages).toList()
+                        else PageLayout.parseRange(effRange, totalPages),
+                        when (parityMode) { 1 -> true; 2 -> false; else -> null },
+                        totalPages,
+                    ).let { if (reverseOrder && !duplex) it.reversed() else it }
+                }
+                if (skipBlank && !duplex && plan.isNotEmpty()) {
+                    plan = withContext(Dispatchers.IO) {
+                        ParcelFileDescriptor.open(pdfFile,
+                            ParcelFileDescriptor.MODE_READ_ONLY).use { fdp ->
+                            PdfRenderer(fdp).use { probe ->
+                                plan.filter { p ->
+                                    if (p - 1 >= probe.pageCount) return@filter false
+                                    val bmp = probe.openPage(p - 1).use { page ->
+                                        PageRenderer.renderPageBitmap(page, 1f)
+                                    }
+                                    val keep = !isBlankPage(bmp)
+                                    bmp.recycle()
+                                    keep
+                                }
+                            }
+                        }
+                    }
+                }
+                if (plan.isEmpty()) {
+                    clearBusy()
+                    Toast.makeText(this@MainActivity,
+                        "All selected pages are blank - nothing to print",
+                        Toast.LENGTH_LONG).show()
+                    return@launch
+                }
+                val thumbs = withContext(Dispatchers.IO) {
+                    PreviewHelper.renderPreview(pdfFile, plan, 6)
+                }
+                clearBusy()
+                PreviewHelper.recycle(previewObj)
+                previewObj = thumbs
+                pendingPreviewPdf = pdfFile
+                previewTitle = if (duplex) "Duplex preview" else "Print preview"
+                previewPlanText = "${plan.size} page(s)" +
+                        (if (pendingPreviewCopies > 1) " x${pendingPreviewCopies} copies" else "") +
+                        (if (bookletMode && !duplex) " · booklet" else "") +
+                        (if (nUpMode != 1 && !duplex) " · ${nUpMode}-up" else "") +
+                        " · $totalPages in document"
+                showPreview = true
+            } catch (e: Exception) {
+                clearBusy()
+                Toast.makeText(this@MainActivity,
+                    "Preview failed: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    /** Runs AFTER the preview dialog's "Print now" — the real job. */
+    private fun executePdfPrint(pdfFile: File, duplex: Boolean) {
+        if (!checkReady()) return
+        // Wi-Fi bridge path: upload the document via IPP (PC renders via GDI).
+        if (useWifi()) {
+            executeWifiPdfPrint(pdfFile, duplex)
+            return
+        }
+        setBusy(if (duplex) "Duplex job..." else "Rendering...")
+        lifecycleScope.launch {
+            try {
+                // Re-resolve the plan inside the job (settings may have changed
+                // between preview and confirm — preview is advisory).
+                val rangeExpr = pendingPreviewRange
+                val copies = pendingPreviewCopies
                 if (!duplex && !bookletMode) {
                     val totalPages = withContext(Dispatchers.IO) {
                         ParcelFileDescriptor.open(pdfFile,
@@ -1065,14 +1623,23 @@ class MainActivity : ComponentActivity() {
                         return@launch
                     }
                     val plan2 = effective
+                    // PRINTER-SIDE COPIES (Windows parity): the engine repeats
+                    // the job via @PJL SET COPIES — the phone streams each
+                    // sheet ONCE. Old code re-streamed every page N times.
                     val reps = copies.coerceIn(1, 99)
                     val up = if (nUpMode == 2) 2 else if (nUpMode == 4) 4 else 1
                     val sheetCount = (plan2.size + up - 1) / up
-                    val total = sheetCount * reps
+                    val total = sheetCount
+                    // Fast-mono eligibility: greyscale + fast toggle + no
+                    // placement transforms that need color compositing.
+                    // N-up/booklet sheets stay on the JPEG path (composed).
+                    val useFastMono = grayscale && fastMono && up == 1 &&
+                            placeFit == 0 && placeMargin == 0 && placeOrient == 0
+                    PageRenderer.multipageHint = plan2.size > 3 && grayscale && !useFastMono
                     JobControl.begin()
                     scanLog("printPdf: single-sided dpi=$printDpi gray=$grayscale " +
-                            "pages=${plan2.size} copies=$reps " +
-                            "rev=$reverseOrder blank=$skipBlank up=$up")
+                            "fastMono=$useFastMono pages=${plan2.size} copies=$reps " +
+                            "(printer) rev=$reverseOrder blank=$skipBlank up=$up")
                     var idx = 0
                     val res = withContext(Dispatchers.IO) {
                         if (up == 1) {
@@ -1080,25 +1647,50 @@ class MainActivity : ComponentActivity() {
                             val session = PageSession(pdfFile, printDpi, grayscale,
                                 placement(), paper)
                             try {
-                                PrintTransmitter.sendPages(
-                                    usb, printDpi, grayscale, "OTG-PDF",
-                                    landscape = session.isLandscape,
-                                    paper = paper,
-                                    source = { _ ->
-                                        if (idx >= total) null
-                                        else {
-                                            val seq = idx++
-                                            val pageNo = plan2[seq % plan2.size]
-                                            val rp = session.render(pageNo - 1)
-                                            PrintTransmitter.RenderedPage(
-                                                rp.jpeg, rp.width, rp.height,
-                                                seq + 1, total)
-                                        }
-                                    },
-                                    onStatus = { busyLabel = it; scanLog("printPdf: $it") },
-                                )
+                                if (useFastMono) {
+                                    // WINDOWS-SPEED PATH: 1-bit RLE pages.
+                                    PrintTransmitter.sendPagesMono1Bit(
+                                        usb, printDpi, "OTG-PDF",
+                                        landscape = session.isLandscape,
+                                        paper = paper,
+                                        copies = reps,
+                                        source = { _ ->
+                                            if (idx >= total) null
+                                            else {
+                                                val seq = idx++
+                                                val pageNo = plan2[seq]
+                                                val mp = session.renderMono(
+                                                    pageNo - 1, ditherMono)
+                                                PrintTransmitter.MonoRenderedPage(
+                                                    mp.rle, mp.width, mp.height,
+                                                    seq + 1, total)
+                                            }
+                                        },
+                                        onStatus = { busyLabel = it; scanLog("printPdf: $it") },
+                                    )
+                                } else {
+                                    PrintTransmitter.sendPages(
+                                        usb, printDpi, grayscale, "OTG-PDF",
+                                        landscape = session.isLandscape,
+                                        paper = paper,
+                                        copies = reps,
+                                        source = { _ ->
+                                            if (idx >= total) null
+                                            else {
+                                                val seq = idx++
+                                                val pageNo = plan2[seq]
+                                                val rp = session.render(pageNo - 1)
+                                                PrintTransmitter.RenderedPage(
+                                                    rp.jpeg, rp.width, rp.height,
+                                                    seq + 1, total)
+                                            }
+                                        },
+                                        onStatus = { busyLabel = it; scanLog("printPdf: $it") },
+                                    )
+                                }
                             } finally {
                                 session.close()
+                                PageRenderer.multipageHint = false
                             }
                         } else {
                             // 2-up: landscape sheets, pages left|right.
@@ -1142,6 +1734,7 @@ class MainActivity : ComponentActivity() {
                                     onStatus = { busyLabel = it; scanLog("printPdf: $it") },
                                     landscape = (up == 2),
                                     paper = paper,
+                                    copies = reps,
                                 )
                             } finally {
                                 session.close()
@@ -1153,10 +1746,12 @@ class MainActivity : ComponentActivity() {
                     when (res) {
                         is PrintTransmitter.Result.Ok -> {
                             addHistory("PDF", describeRange(plan2.size, reps,
-                                rangeExpr), "pdf", uri.toString(),
+                                rangeExpr), "pdf",
+                                pendingPreviewUriStr ?: pdfFile.toURI().toString(),
                                 grayscale, printDpi)
+                            val copyTxt = if (reps > 1) " x$reps (printer)" else ""
                             Notifier.jobDone(this@MainActivity,
-                                "PDF printed", "$total page(s) at ${printDpi}dpi")
+                                "PDF printed", "$total page(s)$copyTxt at ${printDpi}dpi")
                         }
                         is PrintTransmitter.Result.Cancelled ->
                             Toast.makeText(this@MainActivity,
@@ -1188,6 +1783,9 @@ class MainActivity : ComponentActivity() {
                             pages[0].height, grayscale, printDpi,
                             paper = paper,
                             onProgress = { busyLabel = it },
+                            waitForEngineIdle = { n, label ->
+                                waitForEngineIdleUsb(n, label)
+                            },
                             onFlipPrompt = {
                                 withContext(Dispatchers.Main) {
                                     clearBusy()
@@ -1237,6 +1835,9 @@ class MainActivity : ComponentActivity() {
                             pages[0].height, grayscale, printDpi,
                             paper = paper,
                             onProgress = { busyLabel = it },
+                            waitForEngineIdle = { n, label ->
+                                waitForEngineIdleUsb(n, label)
+                            },
                             onFlipPrompt = {
                                 withContext(Dispatchers.Main) {
                                     // hide the busy dialog FIRST - two Compose
@@ -1279,9 +1880,203 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Wi-Fi print: the phone uploads the document over IPP and the PC
+     * bridge renders it through the Windows GDI driver (driver-quality
+     * output, zero OTG cable). Duplex = two IPP jobs with the flip prompt
+     * between them, using client-side page subsets.
+     */
+    private fun executeWifiPdfPrint(pdfFile: File, duplex: Boolean) {
+        setBusy(if (duplex) "Wi-Fi duplex..." else "Sending to bridge...")
+        lifecycleScope.launch {
+            try {
+                JobControl.begin()
+                val reps = pendingPreviewCopies.coerceIn(1, 99)
+                if (!duplex && !bookletMode) {
+                    // Single-sided: one IPP upload; the bridge repeats copies
+                    // server-side per its spooler (send once, repeat via loop
+                    // of IPP jobs only when the bridge reports failure — the
+                    // common case is a single upload).
+                    var okAll = true
+                    repeat(reps) {
+                        val ok = withContext(Dispatchers.IO) {
+                            bridge().printPdf(pdfFile.readBytes(),
+                                "Android Wi-Fi PDF")
+                        }
+                        if (!ok) okAll = false
+                    }
+                    JobControl.end()
+                    if (okAll) {
+                        addHistory("PDF (Wi-Fi)", "${pendingPreviewRange.ifBlank { "all pages" }}" +
+                                (if (reps > 1) " x$reps" else ""),
+                            "pdf", pendingPreviewUriStr ?: pdfFile.toURI().toString(),
+                            grayscale, printDpi)
+                        Notifier.jobDone(this@MainActivity, "Wi-Fi print sent",
+                            "via bridge $bridgeHost:$bridgePort")
+                    } else {
+                        Toast.makeText(this@MainActivity,
+                            "Bridge rejected the job — is the PC spooler online?",
+                            Toast.LENGTH_LONG).show()
+                    }
+                } else {
+                    // Duplex/booklet over Wi-Fi: split into two subset PDFs
+                    // client-side (PdfDocument from rendered bitmaps), then
+                    // two IPP jobs with the flip dialog between them.
+                    val totalPages = withContext(Dispatchers.IO) {
+                        ParcelFileDescriptor.open(pdfFile,
+                            ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
+                            PdfRenderer(fd).use { r -> r.pageCount }
+                        }
+                    }
+                    if (totalPages < 2) {
+                        Toast.makeText(this@MainActivity,
+                            "Duplex needs 2+ pages", Toast.LENGTH_SHORT).show()
+                        return@launch
+                    }
+                    val evens = (2..totalPages step 2).toList().reversed()
+                    val odds = (1..totalPages step 2).toList()
+                    setBusy("Wi-Fi side 1 (evens)...")
+                    val pass1 = withContext(Dispatchers.IO) {
+                        subsetPdfBytes(pdfFile, evens)
+                    }
+                    val ok1 = withContext(Dispatchers.IO) {
+                        bridge().printDuplexPass(pass1, "pass 1/2 (backs)")
+                    }
+                    if (!ok1) {
+                        Toast.makeText(this@MainActivity,
+                            "Bridge rejected pass 1", Toast.LENGTH_LONG).show()
+                        return@launch
+                    }
+                    // Upload-accepted is not printed-done either (PC spooler
+                    // still rendering/marking): wait for the bridge to report
+                    // idle before asking for the flip — same Windows parity
+                    // as the USB path, otherwise the user flips too early.
+                    if (!waitForBridgeIdle(evens.size)) return@launch
+                    withContext(Dispatchers.Main) {
+                        clearBusy()
+                        flipGate = CompletableDeferred()
+                        showFlipDialog = true
+                    }
+                    flipGate!!.await()
+                    withContext(Dispatchers.Main) {
+                        if (!JobControl.isCancelled) setBusy("Wi-Fi side 2...")
+                    }
+                    val pass2 = withContext(Dispatchers.IO) {
+                        subsetPdfBytes(pdfFile, odds)
+                    }
+                    val ok2 = withContext(Dispatchers.IO) {
+                        bridge().printDuplexPass(pass2, "pass 2/2 (fronts)")
+                    }
+                    JobControl.end()
+                    if (ok2) Notifier.jobDone(this@MainActivity,
+                        "Wi-Fi duplex sent", "flip completed via bridge")
+                    else Toast.makeText(this@MainActivity,
+                        "Bridge rejected pass 2", Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(this@MainActivity,
+                    "Wi-Fi print failed: ${e.message}", Toast.LENGTH_LONG).show()
+            } finally {
+                try { JobControl.end() } catch (_: Exception) {}
+                clearBusy()
+            }
+        }
+    }
+
+    /**
+     * Bridge-side parity wait for Wi-Fi duplex: poll /api/status until the
+     * bridge reports idle (its spooler finished side 1). Bounded per-page;
+     * proceeds anyway on timeout. False only on user cancel.
+     */
+    private suspend fun waitForBridgeIdle(passPages: Int): Boolean {
+        val deadline = System.currentTimeMillis() +
+                maxOf(120_000L, passPages * 45_000L)
+        val t0 = System.currentTimeMillis()
+        while (System.currentTimeMillis() < deadline) {
+            if (JobControl.isCancelled) return false
+            val st = withContext(Dispatchers.IO) {
+                runCatching { bridge().getStatus() }.getOrNull()
+            }
+            if (st != null && st.state.equals("idle", ignoreCase = true)) {
+                scanLog("waitForBridgeIdle: side 1 done (${st.detail})")
+                return true
+            }
+            val elapsed = (System.currentTimeMillis() - t0) / 1000
+            setBusy("Finishing Wi-Fi side 1… (${elapsed}s)")
+            scanLog("waitForBridgeIdle: bridge=${st?.state ?: "<unreachable>"}")
+            kotlinx.coroutines.delay(3000)
+        }
+        scanLog("waitForBridgeIdle: timeout — proceeding anyway")
+        return true
+    }
+
+    /** Render [pages1Based] into a new PDF (for Wi-Fi duplex subsets). */
+    private fun subsetPdfBytes(src: File, pages1Based: List<Int>): ByteArray {
+        val out = android.graphics.pdf.PdfDocument()
+        ParcelFileDescriptor.open(src, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
+            PdfRenderer(fd).use { renderer ->
+                val scale = printDpi / 72f
+                for (p in pages1Based) {
+                    if (p - 1 < 0 || p - 1 >= renderer.pageCount) continue
+                    renderer.openPage(p - 1).use { page ->
+                        val w = (page.width * scale).toInt().coerceAtLeast(8)
+                        val h = (page.height * scale).toInt().coerceAtLeast(8)
+                        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                        Canvas(bmp).drawColor(GColor.WHITE)
+                        page.render(bmp, null, null,
+                            PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
+                        val info = android.graphics.pdf.PdfDocument.PageInfo.Builder(
+                            (w * 72 / printDpi), (h * 72 / printDpi), 1).create()
+                        val pg = out.startPage(info)
+                        pg.canvas.drawBitmap(bmp,
+                            android.graphics.Rect(0, 0, w, h),
+                            android.graphics.Rect(0, 0,
+                                (w * 72 / printDpi), (h * 72 / printDpi)), null)
+                        out.finishPage(pg)
+                        bmp.recycle()
+                    }
+                }
+            }
+        }
+        val baos = java.io.ByteArrayOutputStream()
+        out.writeTo(baos)
+        out.close()
+        return baos.toByteArray()
+    }
+
     /** PJL EOJ + RESET + UEL - unwedges a dead job / stuck LCD. */
     private fun rescuePrinter() {
+        if (useWifi()) return // no USB channel in Wi-Fi mode
         try { usb.resetJobState() } catch (_: Exception) {}
+    }
+
+    /**
+     * Windows-parity wait: after a pass's bytes are all transferred, the
+     * engine is usually still marking pages — prompt (and RDYMSG) only when
+     * the panel itself reports Ready. Polls the BIDI status channel every
+     * 2 s, bounded by a per-page deadline (then proceeds anyway: a slow
+     * engine is not a dead one). Returns false only on user cancel.
+     * Runs on a background thread (callers are already on Dispatchers.IO).
+     */
+    private suspend fun waitForEngineIdleUsb(passPages: Int, passLabel: String): Boolean {
+        val deadline = System.currentTimeMillis() +
+                maxOf(120_000L, passPages * 45_000L)
+        val t0 = System.currentTimeMillis()
+        val bidi = BidiHttpClient(usb)
+        while (System.currentTimeMillis() < deadline) {
+            if (JobControl.isCancelled) return false
+            val st = runCatching { bidi.readStatus() }.getOrNull()
+            if (st != null && ManualDuplexPlanner.isEngineIdle(st)) {
+                scanLog("waitForEngineIdle: $passLabel done (panel: $st)")
+                return true
+            }
+            val elapsed = (System.currentTimeMillis() - t0) / 1000
+            busyLabel = "Finishing $passLabel… (${elapsed}s${st?.let { " — $it" } ?: ""})"
+            scanLog("waitForEngineIdle: $passLabel panel=${st ?: "<no reply>"}")
+            kotlinx.coroutines.delay(2000)
+        }
+        scanLog("waitForEngineIdle: $passLabel timeout — proceeding anyway")
+        return true
     }
 
     /**
@@ -1321,6 +2116,13 @@ class MainActivity : ComponentActivity() {
                 val placed = PagePlacement.render(src, pw, ph, place, dpi)
                 src.recycle()
                 return PageRenderer.finishPlacedPage(placed, gray)
+            }
+        }
+
+        /** Fast-mono page: PDF -> 1-bit RLE (identity placement only). */
+        fun renderMono(pageNo: Int, dither: Boolean): MonoRaster.MonoPage {
+            renderer.openPage(pageNo).use { page ->
+                return PageRenderer.renderPageToMono1Bit(page, dpi / 72f, dither)
             }
         }
 
@@ -1392,11 +2194,29 @@ class MainActivity : ComponentActivity() {
      */
     private fun cancelJob() {
         if (!checkReady()) return
-        scanLog("cancelJob: requested (print=${JobControl.active} scan=${ScanControl.active})")
+        scanLog("cancelJob: requested (print=${JobControl.active} scan=${ScanControl.active}) wifi=${useWifi()}")
         // a scan in flight can be cancelled too - it stops between USB reads
         // and then cancels its job on the printer
         if (ScanControl.active) ScanControl.requestCancel()
         JobControl.requestCancel()
+        if (useWifi()) {
+            // Wi-Fi jobs are short HTTP uploads — flag-cancel is enough; the
+            // bridge/PC spooler owns the engine job from here.
+            lifecycleScope.launch {
+                setBusy("Cancelling job...")
+                withContext(Dispatchers.IO) {
+                    var waited = 0
+                    while (JobControl.active && waited < 5_000) {
+                        kotlinx.coroutines.delay(200)
+                        waited += 200
+                    }
+                }
+                clearBusy()
+                Toast.makeText(this@MainActivity, "Job cancelled",
+                    Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
         usb.cancelRequested = true
         lifecycleScope.launch {
             setBusy("Cancelling job...")
@@ -1543,7 +2363,19 @@ class MainActivity : ComponentActivity() {
 
     /** ONE integrity-gated scan of one page (glass or feeder). */
     private suspend fun scanOnce(fromAdf: Boolean): ByteArray {
-        val requestedDpi = scanDpi
+        // Wi-Fi bridge path: eSCL through the PC (WIA engine there).
+        if (useWifi()) {
+            scanLog("scanOnce: Wi-Fi bridge dpi=$scanDpi gray=$scanGray lineart=$scanLineart")
+            val jpeg = withContext(Dispatchers.IO) {
+                bridge().scan(scanDpi,
+                    BridgeClient.colorModeFor(scanGray, scanLineart))
+            }
+            return withContext(Dispatchers.IO) {
+                val leveled = ScanAutoLevels.fix(jpeg)
+                if (scanLineart) ScanAutoLevels.toLineart(leveled) else leveled
+            }
+        }
+        val requestedDpi = scanDpi.coerceAtMost(600) // 1200 removed
         var attempt = 0
         while (true) {
             attempt++
@@ -1551,19 +2383,17 @@ class MainActivity : ComponentActivity() {
                     "gray=$scanGray adf=$fromAdf")
             // NATIVE-LATTICE RULE (proven on this unit): the CCD delivers
             // coherent colour only at 300 dpi — 150/200 are repaired by
-            // scanning 300 and resampling (like HP's own driver). 600 and
-            // 1200 are real engine steps (1200 = the optical max from the
-            // printer's ScannerConfiguration) and go through untouched.
+            // scanning 300 and resampling (like HP's own driver). 600 is
+            // the real optical glass step and goes through untouched.
             // The ADF tops out at 300 dpi (its own optical resolution).
+            // 1200 REMOVED: 15+ min/page, 530 MB RAM, no visible gain.
             val engineDpi = when {
-                requestedDpi > 300 && !fromAdf -> requestedDpi
+                requestedDpi > 300 && !fromAdf -> requestedDpi.coerceAtMost(600)
                 else -> 300
             }
-            // 600 dpi A4 ≈ 5 min, 1200 dpi ≈ 15+ min on this engine —
-            // scale the image deadline with the pixel count.
+            // 600 dpi A4 ≈ 5-6 min on this engine — scale the deadline.
             val budget = when (engineDpi) {
                 600 -> 6 * 60_000L
-                1200 -> 20 * 60_000L
                 else -> 0L
             }
             val jpeg = withContext(Dispatchers.IO) {
@@ -1613,10 +2443,14 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Feeder-paper check on whichever transport is active. */
-    private fun feederHasPaper(): Boolean = try {
-        if (wscnMode) WscnScanClient(usb).adfHasPaper { scanLog(it) } else true
-    } catch (_: Exception) {
-        scanCaps?.adfSupported == true && scanCaps?.scannerState != "Idle"
+    private fun feederHasPaper(): Boolean {
+        // Bridge exposes platen only (AdfState Empty) — single scan per job.
+        if (useWifi()) return false
+        return try {
+            if (wscnMode) WscnScanClient(usb).adfHasPaper { scanLog(it) } else true
+        } catch (_: Exception) {
+            scanCaps?.adfSupported == true && scanCaps?.scannerState != "Idle"
+        }
     }
 
     /**
@@ -1722,6 +2556,20 @@ class MainActivity : ComponentActivity() {
     private fun String.toUriOrNull(): Uri? = try { Uri.parse(this) } catch (_: Exception) { null }
 
     private fun checkReady(): Boolean {
+        if (PhoneBridgeService.isHosting) {
+            Toast.makeText(this,
+                "This phone is hosting the bridge — Stop hosting to print/scan locally",
+                Toast.LENGTH_LONG).show()
+            return false
+        }
+        if (useWifi()) {
+            if (bridgeHost.trim().isEmpty()) {
+                Toast.makeText(this, "Set the bridge address in Setup",
+                    Toast.LENGTH_SHORT).show()
+                return false
+            }
+            return true
+        }
         if (!usb.isOpen) {
             Toast.makeText(this, "Printer not connected",
                 Toast.LENGTH_SHORT).show()

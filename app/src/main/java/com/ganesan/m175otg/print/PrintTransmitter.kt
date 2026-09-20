@@ -54,6 +54,10 @@ object PrintTransmitter {
     class RenderedPage(val jpeg: ByteArray, val width: Int, val height: Int,
                        val pageNumber: Int, val totalPages: Int)
 
+    /** 1-bit RLE mono page for the fast path (payload = RLE, not JPEG). */
+    class MonoRenderedPage(val rle: ByteArray, val width: Int, val height: Int,
+                           val pageNumber: Int, val totalPages: Int)
+
     /** Live callback while a page renders (for progress UI). */
     fun interface PageSource {
         /** Render + return page [pageNumber] (1-based), or null when done. */
@@ -66,6 +70,10 @@ object PrintTransmitter {
      * all 12 (which OOM-killed the app after page 2 and left the printer
      * mid-session: your 12-page stall).
      */
+    fun interface MonoPageSource {
+        fun next(pageNumber: Int): MonoRenderedPage?
+    }
+
     fun sendPages(
         usb: UsbPrinterConnection,
         dpi: Int,
@@ -75,6 +83,8 @@ object PrintTransmitter {
         onStatus: (String) -> Unit = {},
         landscape: Boolean = false,
         paper: Paper = Paper.A4,
+        copies: Int = 1,
+        bitsPerPixel: Int = 8,
     ): Result {
         val geom = PclxlPage.Geometry.of(dpi, paper)
 
@@ -84,13 +94,14 @@ object PrintTransmitter {
         var pageStart = System.currentTimeMillis()
         try {
             if (JobControl.isCancelled) return Result.Cancelled(0)
-            usb.sendPrint(buildHeader(dpi, grayscale, jobName))
+            usb.sendPrint(buildHeader(dpi, grayscale, jobName, copies, bitsPerPixel))
             PclxlPage.writePage(
                 usb.printStream(), first.jpeg, first.width, first.height,
                 geom, grayscale, landscape, mediaName = paper.pclName,
             )
             sent += first.jpeg.size
-            onStatus("page 1/${first.totalPages} sent")
+            val copySuffix = if (copies > 1) " x$copies (printer)" else ""
+            onStatus("page 1/${first.totalPages} sent$copySuffix")
 
             for (p in 2..first.totalPages) {
                 if (JobControl.isCancelled) return Result.Cancelled(sent)
@@ -125,13 +136,65 @@ object PrintTransmitter {
         }
     }
 
-    private fun buildHeader(dpi: Int, grayscale: Boolean, jobName: String): ByteArray {
+    /**
+     * FAST MONO job: streams 1-bit RLE pages (Windows-GDI parity).
+     * Same back-pressure/cancel semantics as [sendPages].
+     */
+    fun sendPagesMono1Bit(
+        usb: UsbPrinterConnection,
+        dpi: Int,
+        jobName: String,
+        source: MonoPageSource,
+        onStatus: (String) -> Unit = {},
+        landscape: Boolean = false,
+        paper: Paper = Paper.A4,
+        copies: Int = 1,
+    ): Result {
+        val geom = PclxlPage.Geometry.of(dpi, paper)
+        val first = source.next(1) ?: return Result.Failed(0, "no pages")
+        var sent = 0L
+        try {
+            if (JobControl.isCancelled) return Result.Cancelled(0)
+            usb.sendPrint(buildHeader(dpi, true, jobName, copies, 1))
+            PclxlPage.writePageMono1Bit(
+                usb.printStream(), first.rle, first.width, first.height,
+                geom, landscape, mediaName = paper.pclName,
+            )
+            sent += first.rle.size
+            val copySuffix = if (copies > 1) " x$copies (printer)" else ""
+            onStatus("page 1/${first.totalPages} sent$copySuffix (fast mono)")
+            for (p in 2..first.totalPages) {
+                if (JobControl.isCancelled) return Result.Cancelled(sent)
+                val page = source.next(p)
+                    ?: return Result.Failed(sent, "renderer stopped at page $p")
+                PclxlPage.writePageMono1Bit(
+                    usb.printStream(), page.rle, page.width, page.height,
+                    geom, landscape, mediaName = paper.pclName,
+                )
+                sent += page.rle.size
+                onStatus("page $p/${page.totalPages} sent (fast mono)")
+            }
+            if (JobControl.isCancelled) return Result.Cancelled(sent)
+            usb.sendPrint(buildFooter(jobName))
+            return Result.Ok(sent)
+        } catch (e: com.ganesan.m175otg.usb.PrintCancelledException) {
+            return Result.Cancelled(sent)
+        } catch (e: java.io.IOException) {
+            return Result.Failed(sent, "transfer failed: ${e.message}")
+        } finally {
+            first.rle.fill(0)
+        }
+    }
+
+    private fun buildHeader(dpi: Int, grayscale: Boolean, jobName: String,
+                            copies: Int = 1, bitsPerPixel: Int = 8): ByteArray {
         val out = java.io.ByteArrayOutputStream(512)
         // resetFirst = false: a per-job printer RESET is not what the Windows
         // driver sends and it forces the engine to re-initialize on every
         // job. RESET is reserved for the recovery path (@PJL RESET via
         // UsbPrinterConnection.resetJobState).
-        PclxlPage.writeSessionOpen(out, dpi, grayscale, jobName, resetFirst = false)
+        PclxlPage.writeSessionOpen(out, dpi, grayscale, jobName,
+            resetFirst = false, copies = copies, bitsPerPixel = bitsPerPixel)
         return out.toByteArray()
     }
 
