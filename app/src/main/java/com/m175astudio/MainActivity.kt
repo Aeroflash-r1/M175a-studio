@@ -41,7 +41,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.m175astudio.net.BridgeClient
 import com.m175astudio.net.DeviceIp
 import com.m175astudio.net.PhoneBridgeService
-import com.m175astudio.print.MonoRaster
 import com.m175astudio.print.PreviewHelper
 import androidx.core.content.ContextCompat
 import androidx.compose.runtime.*
@@ -104,9 +103,6 @@ class MainActivity : ComponentActivity() {
     // -------- print settings
     private var printDpi by mutableStateOf(600)
     private var grayscale by mutableStateOf(false)
-    /** Windows-speed 1-bit RLE mono (default ON for greyscale). */
-    private var fastMono by mutableStateOf(true)
-    private var ditherMono by mutableStateOf(false)
 
     // -------- connection: 0 = USB OTG direct, 1 = Wi-Fi via PC bridge
     private var connMode by mutableIntStateOf(0)
@@ -267,8 +263,11 @@ class MainActivity : ComponentActivity() {
                     if (PhoneBridgeService.jobsServed > 0)
                         "${PhoneBridgeService.jobsServed} served" else null,
                 ).joinToString(" • ")
+                val hit = PhoneBridgeService.lastRemoteHit
                 "Serving on $url" + if (extra.isNotEmpty()) " — $extra" else "" +
-                        ". Runs in background: screen can sleep, app can be swiped away."
+                        (if (hit != null) "\nLast client hit: $hit" else
+                            "\nNo client hits yet — nothing from the 2nd phone has arrived.") +
+                        " Runs in background: screen can sleep, app can be swiped away."
             }
             PhoneBridgeService.lastError != null ->
                 "Failed: ${PhoneBridgeService.lastError}"
@@ -389,8 +388,6 @@ class MainActivity : ComponentActivity() {
         // print settings persist too (last-used quality — Windows-driver parity)
         printDpi = prefs.getInt("printDpi", 300)
         grayscale = prefs.getBoolean("printGray", false)
-        fastMono = prefs.getBoolean("fastMono", true)
-        ditherMono = prefs.getBoolean("ditherMono", false)
         connMode = prefs.getInt("connMode", 0)
         bridgeHost = prefs.getString("bridgeHost", "192.168.137.1") ?: "192.168.137.1"
         bridgePort = prefs.getInt("bridgePort", 8080)
@@ -565,28 +562,14 @@ class MainActivity : ComponentActivity() {
                             label = { Text("Greyscale") })
                     }
                     if (grayscale) {
-                        ChipFlow {
-                            FilterChip(selected = fastMono,
-                                onClick = {
-                                    fastMono = !fastMono
-                                    prefs.edit().putBoolean("fastMono", fastMono).apply()
-                                },
-                                label = { Text("Fast B&W 1-bit (Windows-speed)") })
-                        }
-                        HelperText("Fast B&W sends 1-bit RLE pages (5-10x smaller, " +
-                                "no printer JPEG decode) — multi-page documents " +
-                                "print at engine speed like the Windows driver. " +
-                                "Turn off only for gray photos.")
-                        if (fastMono) {
-                            ChipFlow {
-                                FilterChip(selected = ditherMono,
-                                    onClick = {
-                                        ditherMono = !ditherMono
-                                        prefs.edit().putBoolean("ditherMono", ditherMono).apply()
-                                    },
-                                    label = { Text("Photo dither") })
-                            }
-                        }
+                        // Greyscale rides the verified 8-bit eGray JPEG path
+                        // (this engine's only raster format — 1-bit RLE dies
+                        // on the panel with "PCL XL ERROR / Subsystem: image").
+                        // Single-channel JPEG is ~1/3 the bytes of color, and
+                        // multipage jobs auto-drop to q60 for RIP speed.
+                        HelperText("Greyscale is single-channel JPEG (~1/3 of " +
+                                "color bytes). Draft 300 + multipage auto-quality " +
+                                "is the fastest verified combo for documents.")
                     }
                     HorizontalDivider()
                     SectionTitle("Document")
@@ -1131,20 +1114,10 @@ class MainActivity : ComponentActivity() {
                         Button(onClick = {
                             setBusy("Testing bridge...")
                             lifecycleScope.launch {
-                                val ok = withContext(Dispatchers.IO) {
-                                    bridge().testConnection()
-                                }
-                                val st = withContext(Dispatchers.IO) {
-                                    bridge().getStatus()
+                                bridgeStatusText = withContext(Dispatchers.IO) {
+                                    bridge().testDetailed()
                                 }
                                 clearBusy()
-                                bridgeStatusText = if (ok) {
-                                    "Connected — bridge says: " +
-                                            "${st?.state ?: "?"} ${st?.detail ?: ""}"
-                                } else {
-                                    "No bridge at $bridgeHost:$bridgePort — " +
-                                            "is run.py serving on the PC, or an old phone hosting?"
-                                }
                             }
                         }, modifier = Modifier.fillMaxWidth()) { Text("Test connection") }
                         Text(bridgeStatusText,
@@ -1190,17 +1163,24 @@ class MainActivity : ComponentActivity() {
                     HorizontalDivider()
                     SectionTitle("Setup — second phone (wireless)")
                     HelperText("1. Install this same app (M175a Print v0.1)\n" +
-                            "2. Join the host's hotspot / same Wi-Fi\n" +
-                            "3. Setup → Wi-Fi bridge → type the host address → Test\n" +
+                            "2. Join the host's hotspot / same Wi-Fi — then turn " +
+                            "MOBILE DATA OFF (otherwise the phone routes around Wi-Fi)\n" +
+                            "3. Setup → Wi-Fi bridge → type just the IP " +
+                            "(e.g. 192.168.43.1, no http://) → Test\n" +
                             "4. Print & scan wirelessly — PDF, images, greyscale, " +
-                            "preview and copies all work. If Test fails, check " +
-                            "both phones share one network and re-tap Host.")
+                            "preview and copies all work.\n" +
+                            "If Test fails: read its message (timeout = wrong IP or " +
+                            "hotspot isolation; refused = host not serving). Then on " +
+                            "the HOST check 'Last client hit' — unchanged means " +
+                            "packets never arrive (rejoin the hotspot, try 2.4 GHz " +
+                            "band); a hit with REJECTED/FAILED means traffic arrives " +
+                            "and the fix is on the host side.")
                 }
             }
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Speed tips", style = MaterialTheme.typography.titleSmall)
-                    Text("• Greyscale + Fast B&W 1-bit = engine-speed multi-page text\n" +
+                    Text("• Greyscale + Draft 300 = fastest verified multi-page text\n" +
                             "• Draft 300 for documents, Best 600 for photos\n" +
                             "• Copies print on the engine (one send, not N sends)\n" +
                             "• Preview every job before it leaves the phone",
@@ -1267,7 +1247,7 @@ class MainActivity : ComponentActivity() {
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
-                    Text("Quality: ${printDpi}dpi ${if (grayscale) "greyscale" + if (fastMono) " + fast 1-bit" else "" else "color"} · " +
+                    Text("Quality: ${printDpi}dpi ${if (grayscale) "greyscale" else "color"} · " +
                             if (useWifi()) "via Wi-Fi bridge" else "via USB OTG",
                         style = MaterialTheme.typography.bodySmall)
                 }
@@ -1797,15 +1777,13 @@ class MainActivity : ComponentActivity() {
                     val up = if (nUpMode == 2) 2 else if (nUpMode == 4) 4 else 1
                     val sheetCount = (plan2.size + up - 1) / up
                     val total = sheetCount
-                    // Fast-mono eligibility: greyscale + fast toggle + no
-                    // placement transforms that need color compositing.
-                    // N-up/booklet sheets stay on the JPEG path (composed).
-                    val useFastMono = grayscale && fastMono && up == 1 &&
-                            placeFit == 0 && placeMargin == 0 && placeOrient == 0
-                    PageRenderer.multipageHint = plan2.size > 3 && grayscale && !useFastMono
+                    // Greyscale multipage auto-quality (verified-safe speed
+                    // lever: q60 text JPEGs). 1-bit RLE was retired — the
+                    // engine rejects it ("PCL XL ERROR / Subsystem: image").
+                    PageRenderer.multipageHint = plan2.size > 3 && grayscale
                     beginUsbJob()
                     scanLog("printPdf: single-sided dpi=$printDpi gray=$grayscale " +
-                            "fastMono=$useFastMono pages=${plan2.size} copies=$reps " +
+                            "pages=${plan2.size} copies=$reps " +
                             "(printer) rev=$reverseOrder blank=$skipBlank up=$up")
                     var idx = 0
                     val res = withContext(Dispatchers.IO) {
@@ -1814,47 +1792,24 @@ class MainActivity : ComponentActivity() {
                             val session = PageSession(pdfFile, printDpi, grayscale,
                                 placement(), paper)
                             try {
-                                if (useFastMono) {
-                                    // WINDOWS-SPEED PATH: 1-bit RLE pages.
-                                    PrintTransmitter.sendPagesMono1Bit(
-                                        usb, printDpi, "OTG-PDF",
-                                        landscape = session.isLandscape,
-                                        paper = paper,
-                                        copies = reps,
-                                        source = { _ ->
-                                            if (idx >= total) null
-                                            else {
-                                                val seq = idx++
-                                                val pageNo = plan2[seq]
-                                                val mp = session.renderMono(
-                                                    pageNo - 1, ditherMono)
-                                                PrintTransmitter.MonoRenderedPage(
-                                                    mp.rle, mp.width, mp.height,
-                                                    seq + 1, total)
-                                            }
-                                        },
-                                        onStatus = { busyLabel = it; scanLog("printPdf: $it") },
-                                    )
-                                } else {
-                                    PrintTransmitter.sendPages(
-                                        usb, printDpi, grayscale, "OTG-PDF",
-                                        landscape = session.isLandscape,
-                                        paper = paper,
-                                        copies = reps,
-                                        source = { _ ->
-                                            if (idx >= total) null
-                                            else {
-                                                val seq = idx++
-                                                val pageNo = plan2[seq]
-                                                val rp = session.render(pageNo - 1)
-                                                PrintTransmitter.RenderedPage(
-                                                    rp.jpeg, rp.width, rp.height,
-                                                    seq + 1, total)
-                                            }
-                                        },
-                                        onStatus = { busyLabel = it; scanLog("printPdf: $it") },
-                                    )
-                                }
+                                PrintTransmitter.sendPages(
+                                    usb, printDpi, grayscale, "OTG-PDF",
+                                    landscape = session.isLandscape,
+                                    paper = paper,
+                                    copies = reps,
+                                    source = { _ ->
+                                        if (idx >= total) null
+                                        else {
+                                            val seq = idx++
+                                            val pageNo = plan2[seq]
+                                            val rp = session.render(pageNo - 1)
+                                            PrintTransmitter.RenderedPage(
+                                                rp.jpeg, rp.width, rp.height,
+                                                seq + 1, total)
+                                        }
+                                    },
+                                    onStatus = { busyLabel = it; scanLog("printPdf: $it") },
+                                )
                             } finally {
                                 session.close()
                                 PageRenderer.multipageHint = false
@@ -2293,13 +2248,6 @@ class MainActivity : ComponentActivity() {
                 val placed = PagePlacement.render(src, pw, ph, place, dpi)
                 src.recycle()
                 return PageRenderer.finishPlacedPage(placed, gray)
-            }
-        }
-
-        /** Fast-mono page: PDF -> 1-bit RLE (identity placement only). */
-        fun renderMono(pageNo: Int, dither: Boolean): MonoRaster.MonoPage {
-            renderer.openPage(pageNo).use { page ->
-                return PageRenderer.renderPageToMono1Bit(page, dpi / 72f, dither)
             }
         }
 

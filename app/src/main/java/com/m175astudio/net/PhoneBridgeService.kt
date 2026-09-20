@@ -85,6 +85,15 @@ class PhoneBridgeService : Service() {
         /** Remote jobs fully served since start. */
         @Volatile var jobsServed: Int = 0
             private set
+
+        /**
+         * Last remote HTTP hit, e.g. "POST /ipp/print printed 820KB".
+         * The key bridge diagnostic: if the client taps Test/print and this
+         * never changes, packets never arrive (wrong IP / hotspot isolation);
+         * if it shows REJECTED/FAILED, traffic arrives and the app refused it.
+         */
+        @Volatile var lastRemoteHit: String? = null
+            private set
     }
 
     private var conn: UsbPrinterConnection? = null
@@ -186,6 +195,9 @@ class PhoneBridgeService : Service() {
                 isBusy = { JobControl.active || ScanControl.active || engine.waiting > 0 },
                 queueDepth = { engine.waiting },
                 jobsServed = { served.get() },
+                onRequest = { m, p, n ->
+                    lastRemoteHit = "$m $p $n".trim()
+                },
                 printDocument = { doc, hint ->
                     // Block the HTTP thread until our FIFO turn comes
                     // (office queue waits instead of failing fast).
@@ -226,6 +238,7 @@ class PhoneBridgeService : Service() {
         servingUrl = null
         currentJob = null
         queueDepth = 0
+        lastRemoteHit = null
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
     }
 
@@ -242,8 +255,6 @@ class PhoneBridgeService : Service() {
         return mapOf(
             "printDpi" to p.getInt("printDpi", 300),
             "printGray" to p.getBoolean("printGray", false),
-            "fastMono" to p.getBoolean("fastMono", true),
-            "ditherMono" to p.getBoolean("ditherMono", false),
             "paperName" to (p.getString("paperName", null) ?: Paper.A4.name),
             "placeFit" to p.getInt("placeFit", 0),
             "placeOrient" to p.getInt("placeOrient", 0),
@@ -303,48 +314,30 @@ class PhoneBridgeService : Service() {
         val s = settings()
         val dpi = s["printDpi"] as Int
         val gray = s["printGray"] as Boolean
-        val mono1bit = gray && (s["fastMono"] as Boolean)
         val paper = Paper.fromSaved(s["paperName"] as String)
         ParcelFileDescriptor.open(pdf, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
             PdfRenderer(fd).use { renderer ->
                 val total = renderer.pageCount
                 if (total <= 0) return false
-                val geom = PclxlPage.Geometry.of(dpi, paper)
-                PageRenderer.multipageHint = total > 3 && gray && !mono1bit
+                // JPEG-only raster: 1-bit RLE dies on the panel with
+                // "PCL XL ERROR / Subsystem: image" (cheetraster.e).
+                PageRenderer.multipageHint = total > 3 && gray
                 try {
-                    if (mono1bit) {
-                        var idx = 0
-                        val res = PrintTransmitter.sendPagesMono1Bit(
-                            usb, dpi, "PHONE-BRIDGE", paper = paper,
-                            source = { _ ->
-                                if (idx >= total) null
-                                else renderer.openPage(idx).use { page ->
-                                    idx++
-                                    val mp = PageRenderer.renderPageToMono1Bit(
-                                        page, dpi / 72f, s["ditherMono"] as Boolean)
-                                    PrintTransmitter.MonoRenderedPage(
-                                        mp.rle, mp.width, mp.height, idx, total)
-                                }
-                            },
-                        )
-                        return res is PrintTransmitter.Result.Ok
-                    } else {
-                        val scale = dpi / 72f
-                        var idx = 0
-                        val res = PrintTransmitter.sendPages(
-                            usb, dpi, gray, "PHONE-BRIDGE", paper = paper,
-                            source = { _ ->
-                                if (idx >= total) null
-                                else renderer.openPage(idx).use { page ->
-                                    idx++
-                                    val rp = PageRenderer.renderPageToJpeg(page, scale, gray)
-                                    PrintTransmitter.RenderedPage(
-                                        rp.jpeg, rp.width, rp.height, idx, total)
-                                }
-                            },
-                        )
-                        return res is PrintTransmitter.Result.Ok
-                    }
+                    val scale = dpi / 72f
+                    var idx = 0
+                    val res = PrintTransmitter.sendPages(
+                        usb, dpi, gray, "PHONE-BRIDGE", paper = paper,
+                        source = { _ ->
+                            if (idx >= total) null
+                            else renderer.openPage(idx).use { page ->
+                                idx++
+                                val rp = PageRenderer.renderPageToJpeg(page, scale, gray)
+                                PrintTransmitter.RenderedPage(
+                                    rp.jpeg, rp.width, rp.height, idx, total)
+                            }
+                        },
+                    )
+                    return res is PrintTransmitter.Result.Ok
                 } finally {
                     PageRenderer.multipageHint = false
                 }

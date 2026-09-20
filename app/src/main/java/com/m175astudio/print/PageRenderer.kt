@@ -162,14 +162,6 @@ object PageRenderer {
         return toJpegPage(bmp, grayscale)
     }
 
-    /**
-     * FAST MONO raster: PDF page -> 1-bit RLE (Windows-speed path).
-     * Threshold text (default) or Floyd-Steinberg dither for photo pages.
-     */
-    fun renderPageToMono1Bit(page: PdfRenderer.Page, scale: Float,
-                             dither: Boolean = false): MonoRaster.MonoPage =
-        MonoRaster.renderPdfPageToMono(page, scale, dither)
-
     /** Renders a single image file (JPEG/PNG from gallery) to one page. */
     fun renderImage(src: Bitmap, dpi: Int, grayscale: Boolean,
                     paper: Paper = Paper.A4): RenderedPage {
@@ -203,10 +195,11 @@ object PageRenderer {
      * these resolutions 82 (colour) / 70 (greyscale) is visually identical on
      * paper while cutting bytes by roughly a third.
      *
-     * Multipage gray optimisation: text-heavy gray pages compress identically
-     * at q60 vs q70 on a 600dpi laser (halftone-limited), saving ~20% more
-     * bytes and RIP time per page. Applied only when [multipageHint] is true
-     * so single pages keep maximum quality.
+     * Multipage gray optimisation (the remaining verified-safe speed lever
+     * now that 1-bit RLE is retired): text-heavy gray pages compress
+     * identically at q60 vs q70 on a 600dpi laser (halftone-limited), saving
+     * ~20% more bytes and RIP time per page. Applied only when
+     * [multipageHint] is true so single pages keep maximum quality.
      */
     @Volatile var multipageHint: Boolean = false
 

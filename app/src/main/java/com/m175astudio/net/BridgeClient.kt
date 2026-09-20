@@ -21,8 +21,20 @@ import java.nio.ByteOrder
 class BridgeClient(val host: String, val port: Int = 8080) {
 
     fun baseUrl(): String {
-        val h = host.trim().trimEnd('/')
-        return if (h.startsWith("http")) "$h" else "http://$h:$port"
+        var h = host.trim().trimEnd('/')
+        if (h.startsWith("http", ignoreCase = true)) {
+            if (!h.contains("://")) h = "http://$h"
+            // A pasted URL without :port would silently hit :80 — keep an
+            // explicit port, otherwise append the configured one.
+            val m = Regex("^(https?://[^/:?#]+)(:\\d+)?(.*)$",
+                RegexOption.IGNORE_CASE).matchEntire(h)
+            if (m != null && m.groupValues[2].isEmpty()) {
+                return m.groupValues[1] + ":$port" + m.groupValues[3]
+            }
+            return h
+        }
+        // Bare "ip" or "ip:port" typed by hand.
+        return if (Regex(":\\d+$").containsMatchIn(h)) "http://$h" else "http://$h:$port"
     }
 
     data class BridgeStatus(
@@ -54,6 +66,38 @@ class BridgeClient(val host: String, val port: Int = 8080) {
     }
 
     fun testConnection(): Boolean = getStatus() != null
+
+    /**
+     * Verbose probe for the Setup Test button: tells wrong-IP/timeout/
+     * refused apart instead of a bare "no bridge".
+     */
+    fun testDetailed(timeoutMs: Int = 8_000): String {
+        return try {
+            val c = (URL("${baseUrl()}/api/status").openConnection() as HttpURLConnection)
+            c.connectTimeout = timeoutMs
+            c.readTimeout = timeoutMs
+            c.connect()
+            val code = c.responseCode
+            if (code != 200) {
+                return "FAIL: HTTP $code — something answers at ${baseUrl()} " +
+                        "but it is not a bridge (/api/status)."
+            }
+            val body = c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+            val state = jsonStr(body, "state") ?: "unknown"
+            val detail = jsonStr(body, "detail") ?: ""
+            "OK — bridge state: $state $detail".trim()
+        } catch (e: java.net.SocketTimeoutException) {
+            "FAIL: timed out — wrong IP, or hotspot isolation/firewall. " +
+                    "(${e.message})"
+        } catch (e: java.net.ConnectException) {
+            "FAIL: connection refused — nothing serving at ${baseUrl()}. " +
+                    "Start hosting / run.py first. (${e.message})"
+        } catch (e: java.net.UnknownHostException) {
+            "FAIL: no route to host — not on the same network? (${e.message})"
+        } catch (e: Exception) {
+            "FAIL: ${e.javaClass.simpleName}: ${e.message}"
+        }
+    }
 
     // ------------------------------------------------------------ print
 

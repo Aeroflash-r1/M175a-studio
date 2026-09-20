@@ -12,16 +12,12 @@ import org.junit.Test
 class PclxlGeometryTest {
 
     private fun bytesOf(
-        dpi: Int, mono: Boolean,
+        dpi: Int, grayscale: Boolean,
     ): ByteArray {
         val out = java.io.ByteArrayOutputStream()
         val geom = PclxlPage.Geometry.of(dpi)
         val payload = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)
-        if (mono) {
-            PclxlPage.writePageMono1Bit(out, payload, 8, 1, geom)
-        } else {
-            PclxlPage.writePage(out, payload, 8, 1, geom, grayscale = false)
-        }
+        PclxlPage.writePage(out, payload, 8, 1, geom, grayscale = grayscale)
         return out.toByteArray()
     }
 
@@ -61,7 +57,7 @@ class PclxlGeometryTest {
     }
 
     @Test
-    fun originAndCursorScale_mono() {
+    fun originAndCursorScale_grayscale() {
         val b300 = bytesOf(300, true)
         assertTrue(contains(b300, originBytes(50, 50)))
         assertTrue(contains(b300, cursorBytes(0, 20)))

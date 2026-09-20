@@ -120,12 +120,14 @@ object PclxlPage {
     private const val OP_READ_IMAGE = 0xB1
     private const val OP_END_IMAGE = 0xB2
 
-    private const val COMPRESS_RLE = 1
+    // NOTE: CompressMode is JPEG-only on this engine. A 1-bit RLE path
+    // (e1Bit + eRLE) was tried and the firmware rejects it with
+    // "PCL XL ERROR / Subsystem: image / cheetraster.e" — the Windows driver
+    // likewise only ever sends JPEG, now we know why. Greyscale speed comes
+    // from 8-bit eGray JPEG (1/3 the bytes of color) + printer-side COPIES.
     private const val COMPRESS_JPEG = 2
     private const val COLORSPACE_GRAY = 1
     private const val COLORSPACE_RGB = 2
-    private const val COLORDEPTH_1BIT = 0
-    private const val COLORDEPTH_8BIT = 2
 
     /**
      * Driver-exact geometry anchors, captured at 600 dpi. BeginSession sets
@@ -179,12 +181,12 @@ object PclxlPage {
      *  @param copies printer-side copies via @PJL SET COPIES (Windows parity:
      *    the engine repeats the whole job itself — the phone sends each page
      *    ONCE instead of re-streaming it N times over slow OTG bulk).
-     *  @param bitsPerPixel 8 = JPEG gray/color path, 1 = fast 1-bit mono RLE.
+     *  BITSPERPIXEL is always 8: the engine's only raster path is 8-bit JPEG
+     *  (a 1-bit RLE attempt dies with "PCL XL ERROR / Subsystem: image").
      */
     fun writeSessionOpen(out: OutputStream, dpi: Int, grayscale: Boolean,
                          jobName: String, lcdMessage: String? = null,
-                         resetFirst: Boolean = false, copies: Int = 1,
-                         bitsPerPixel: Int = 8) {
+                         resetFirst: Boolean = false, copies: Int = 1) {
         val w = ByteArrayOutputStream(512)
         // RESET is only for RECOVERY (a printer left in a PCLXL error state).
         // Windows does not send it at the start of a normal job, and it makes
@@ -198,7 +200,7 @@ object PclxlPage {
         w.write("@PJL SET RESOLUTION=$dpi\r\n".toByteArray(Charsets.ISO_8859_1))
         w.write("@PJL SET GRAYSCALE=${if (grayscale) "ON" else "OFF"}\r\n"
             .toByteArray(Charsets.ISO_8859_1))
-        w.write("@PJL SET BITSPERPIXEL=$bitsPerPixel\r\n".toByteArray(Charsets.ISO_8859_1))
+        w.write("@PJL SET BITSPERPIXEL=8\r\n".toByteArray(Charsets.ISO_8859_1))
         if (copies > 1) {
             w.write("@PJL SET COPIES=${copies.coerceIn(2, 99)}\r\n"
                 .toByteArray(Charsets.ISO_8859_1))
@@ -327,103 +329,6 @@ object PclxlPage {
         w.write(byteArrayOf(0xFA.toByte()))       // embedded_data
         w.write(u32(jpeg.size))
         w.write(jpeg)
-
-        w.write(u8(OP_END_IMAGE))
-        w.write(u8(OP_POP_GS))
-        w.write(u8(OP_END_PAGE))
-
-        out.write(w.toByteArray())
-    }
-
-    /**
-     * FAST MONO page: 1-bit RLE payload (Windows-GDI parity path).
-     *
-     * Identical op sequence to [writePage] except:
-     *  - ColorSpace = eGray, ColorDepth = e1Bit, CompressMode = eRLE
-     *  - embedded_data carries RLE-packed rows (stride=(srcW+7)/8 per row)
-     * Payload is typically 5-10x smaller than the 8-bit JPEG gray page and
-     * the printer RIPs it with a memcpy instead of a JPEG decode — this is
-     * the multi-page B&W speedup (matches the 6x figure in docs/03).
-     */
-    fun writePageMono1Bit(out: OutputStream, rle: ByteArray, srcW: Int, srcH: Int,
-                          geom: Geometry, landscape: Boolean = false,
-                          mediaName: String = "A4") {
-        val w = ByteArrayOutputStream(rle.size + 512)
-        val destW = if (landscape) geom.destH else geom.destW
-        val destH = if (landscape) geom.destW else geom.destH
-
-        w.write(ubyteAttr(A_MEDIA_SOURCE, 1))
-        w.write(ubyteAttr(A_ORIENTATION, if (landscape) 1 else 0))
-        w.write(ubyteArrayAttr(A_MEDIA_SIZE,
-            mediaName.toByteArray(Charsets.ISO_8859_1)))
-        w.write(u8(OP_BEGIN_PAGE))
-
-        // dpi-scaled like the JPEG path above
-        val (mox, moy) = originXY(geom.dpi)
-        w.write(sint16xyAttr(A_PAGE_ORIGIN, mox, moy))
-        w.write(u8(OP_SET_PAGE_ORIGIN))
-
-        w.write(ubyteAttr(A_TEXT_OBJECTS, 0))
-        w.write(u8(OP_SET_NEUTRAL_AXIS))
-        w.write(ubyteAttr(A_RASTER_OBJECTS, 1))
-        w.write(u8(OP_SET_NEUTRAL_AXIS))
-        w.write(ubyteAttr(A_VECTOR_OBJECTS, 0))
-        w.write(u8(OP_SET_NEUTRAL_AXIS))
-
-        w.write(ubyteAttr(A_TEXT_OBJECTS, 2))
-        w.write(ubyteAttr(A_VECTOR_OBJECTS, 2))
-        w.write(ubyteAttr(A_RASTER_OBJECTS, 2))
-        w.write(u8(OP_SET_HALFTONE_METHOD))
-        w.write(ubyteAttr(A_ALL_OBJECT_TYPES, 1))
-        w.write(u8(OP_SET_ADAPTIVE_HALFTONING))
-        w.write(ubyteAttr(A_ALL_OBJECT_TYPES, 2))
-        w.write(u8(OP_SET_COLOR_TRAPPING))
-        w.write(ubyteAttr(A_COLOR_TREATMENT, 1))
-        w.write(u8(OP_SET_COLOR_TREATMENT))
-
-        w.write(real32xyAttr(A_PAGE_SCALE, 1.0f, 1.0f))
-        w.write(u8(OP_SET_PAGE_SCALE))
-
-        w.write(ubyteAttr(A_COLOR_SPACE, COLORSPACE_GRAY))
-        w.write(u8(OP_SET_COLOR_SPACE))
-        w.write(ubyteAttr(A_TX_MODE, 0))
-        w.write(u8(OP_SET_PATTERN_TX_MODE))
-        w.write(ubyteAttr(A_TX_MODE, 0))
-        w.write(u8(OP_SET_SOURCE_TX_MODE))
-        w.write(ubyteAttr(A_ROP3, 204))
-        w.write(u8(OP_SET_ROP))
-
-        w.write(u8(OP_PUSH_GS))
-        w.write(u8(OP_SET_CLIP_TO_PAGE))
-
-        // dpi-scaled cursor like the JPEG path
-        val (mcx, mcy) = cursorXY(geom.dpi)
-        w.write(sint16xyAttr(A_POINT, mcx, mcy))
-        w.write(u8(OP_SET_CURSOR))
-        w.write(ubyteAttr(A_TX_MODE, 0))
-        w.write(u8(OP_SET_PATTERN_TX_MODE))
-        w.write(ubyteAttr(A_TX_MODE, 0))
-        w.write(u8(OP_SET_SOURCE_TX_MODE))
-        w.write(ubyteAttr(A_ROP3, 204))
-        w.write(u8(OP_SET_ROP))
-        w.write(ubyteAttr(A_COLOR_SPACE, COLORSPACE_GRAY))
-        w.write(u8(OP_SET_COLOR_SPACE))
-
-        w.write(ubyteAttr(A_COLOR_MAPPING, 0))    // eDirectPixel
-        w.write(ubyteAttr(A_COLOR_DEPTH, COLORDEPTH_1BIT))
-        w.write(uint16Attr(A_SOURCE_WIDTH, srcW))
-        w.write(uint16Attr(A_SOURCE_HEIGHT, srcH))
-        w.write(uint16xyAttr(A_DESTINATION_SIZE, destW, destH))
-        w.write(u8(OP_BEGIN_IMAGE))
-
-        w.write(uint16Attr(A_START_LINE, 0))
-        w.write(uint16Attr(A_BLOCK_HEIGHT, srcH))
-        w.write(ubyteAttr(A_COMPRESS_MODE, COMPRESS_RLE))
-        w.write(u8(OP_READ_IMAGE))
-
-        w.write(byteArrayOf(0xFA.toByte()))
-        w.write(u32(rle.size))
-        w.write(rle)
 
         w.write(u8(OP_END_IMAGE))
         w.write(u8(OP_POP_GS))
