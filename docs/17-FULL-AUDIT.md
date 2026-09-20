@@ -80,7 +80,7 @@ how the pixel-format root cause above was caught.
 | Scan | saved file integrity | ✅ mean RGB 210/209/208 (matches app's own reading) |
 | Scan | save location | ✅ `Pictures/M175Scans/*.jpg`, `Download/M175Scans/*.pdf` |
 | Printer | live toner/drum/pages/lifetime + low-toner alert | ✅ live values |
-| System | PrintService registered | ✅ `com.ganesan.m175otg.print.M175PrintService` |
+| System | PrintService registered | ✅ `com.m175astudio.print.M175PrintService` |
 | System | notification channels | ✅ `m175_alerts`, `m175_events` |
 | Stability | crashes during the whole session | ✅ none |
 

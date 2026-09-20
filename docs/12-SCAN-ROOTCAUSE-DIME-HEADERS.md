@@ -40,7 +40,7 @@ Same bytes. Only the interleaved record headers were removed.
 ## The fix
 
 `DimeFraming.assemblePayload()` — one shared implementation
-(`app/src/main/java/com/ganesan/m175otg/scan/DimeFraming.kt`) used by BOTH
+(`app/src/main/java/com/m175astudio/scan/DimeFraming.kt`) used by BOTH
 transports, which walks the DIME chain (accepting version 0), skips the SOAP
 record, and concatenates the image records' payloads. The JPEG is sliced from
 **that** payload, never from the raw body.
@@ -61,7 +61,7 @@ integrity gate passes the very first read — no auto-retry.
 
 ## Regression tests
 
-`app/src/test/java/com/ganesan/m175otg/scan/DimeFramingTest.kt` (5 tests) runs
+`app/src/test/java/com/m175astudio/scan/DimeFramingTest.kt` (5 tests) runs
 against the real captured body shipped as `app/src/test/resources/dime-body-300.bin`:
 it asserts the chain assembles to exactly 533,393 B with SOI/APP0 head and EOI
 tail, that the raw slice really does contain the 259 interleaved headers, and

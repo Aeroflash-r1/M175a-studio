@@ -25,7 +25,7 @@ Evidence: printer's own ScannerConfiguration says PlatenOpticalResolution=1200, 
 4. AI-reviewer backlog items (PrintService, share-sheet, multi-page PDF) still open — see chat history
 
 ## Files touched
-- app/src/main/java/com/ganesan/m175otg/MainActivity.kt (engineDpi selection, 5 chips)
-- app/src/main/java/com/ganesan/m175otg/scan/WscnScanClient.kt (budgetMs, retrieve-retry, 30 MB cap)
-- app/src/main/java/com/ganesan/m175otg/scan/LedmScanClient.kt (budgetMs)
-- app/src/main/java/com/ganesan/m175otg/scan/ScanAutoLevels.kt (huge-image safety)
+- app/src/main/java/com/m175astudio/MainActivity.kt (engineDpi selection, 5 chips)
+- app/src/main/java/com/m175astudio/scan/WscnScanClient.kt (budgetMs, retrieve-retry, 30 MB cap)
+- app/src/main/java/com/m175astudio/scan/LedmScanClient.kt (budgetMs)
+- app/src/main/java/com/m175astudio/scan/ScanAutoLevels.kt (huge-image safety)

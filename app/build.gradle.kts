@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "com.ganesan.m175otg"
+    namespace = "com.m175astudio"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.ganesan.m175otg"
+        applicationId = "com.m175astudio"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
@@ -18,7 +18,16 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 full-mode: shrink + optimize + obfuscate, strip unused res.
+            // Signed with the debug key so the GitHub APK installs by sideload
+            // (no private keystore is committed to this repo).
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {

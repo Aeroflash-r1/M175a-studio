@@ -40,7 +40,7 @@ disassembler. Nothing is guessed — see
 ## Project layout
 
 ```
-app/src/main/java/com/ganesan/m175otg/
+app/src/main/java/com/m175astudio/
   MainActivity.kt               UI: status, print, duplex wizard, scan, probes
   usb/UsbPrinterConnection.kt   endpoints 0x01 print / 0x09+0x89 BIDI / 0x03+0x83 scan
   usb/BidiHttpClient.kt         HTTP-over-USB + chunked decode + LEDM toner parser

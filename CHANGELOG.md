@@ -1,8 +1,15 @@
 # Changelog
 
-## v0.1 — first release
+## v0.1 — first release (re-cut)
 
-Android app (`com.ganesan.m175otg`, versionCode 1) + PC bridge + reverse-engineering DevKit.
+- App name **M175a Print**, package `com.m175astudio` (was `com.ganesan.m175otg`)
+- Release APK is **R8-minified** (`minify + shrinkResources`, debug-signed for sideload)
+- Notification permission fixed: `POST_NOTIFICATIONS` is now declared, asked on
+  first launch, and re-askable from Setup → Notifications (incl. app-Settings
+  path when permanently denied)
+- Setup tab now carries the full phone-bridge guide (host steps + client steps)
+
+Android app (`com.m175astudio`, versionCode 1) + PC bridge + reverse-engineering DevKit.
 
 **Printing (USB OTG, PCL XL)**
 

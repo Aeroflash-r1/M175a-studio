@@ -20,9 +20,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Job-done / toner / hosting alerts (runtime ask on Android 13+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
-        android:label="M175 OTG Print"
+        android:label="M175a Print"
         android:icon="@drawable/ic_app"
         android:largeHeap="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
