@@ -49,6 +49,13 @@ class PhoneBridgeServer(
         val printDocument: (doc: ByteArray, formatHint: String) -> Boolean,
         /** Scan one page over USB at [dpi]/[colorMode] (eSCL names). */
         val scan: (dpi: Int, colorMode: String) -> ByteArray,
+        /**
+         * Hit log for the host UI: invoked per request so Setup can show
+         * whether client traffic even ARRIVES (network issue) or arrives
+         * and fails (app issue).
+         */
+        val onRequest: (method: String, path: String, note: String) -> Unit =
+            { _, _, _ -> },
     )
 
     /** Lazy eSCL session: created by POST, scanned page-by-page on GET. */
@@ -209,6 +216,7 @@ class PhoneBridgeServer(
     // ------------------------------------------------------------ routes
 
     private fun route(sock: Socket, r: Request) {
+        runCatching { handlers.onRequest(r.method, r.path, "") }
         when {
             r.method == "GET" && (r.path == "/" || r.path == "/index.html") ->
                 respond(sock, 200, indexHtml().toByteArray(), "text/html; charset=utf-8")
@@ -355,6 +363,10 @@ class PhoneBridgeServer(
         }
         val ok = runCatching { handlers.printDocument(doc, hint) }.getOrDefault(false)
         if (ok) jobsSent.incrementAndGet()
+        runCatching {
+            handlers.onRequest("POST", "/ipp/print",
+                if (ok) "printed ${doc.size / 1024}KB" else "REJECTED")
+        }
         respond(sock, 200, ippReply(reqId, ok), "application/ipp")
     }
 
@@ -424,6 +436,7 @@ class PhoneBridgeServer(
         }
         val id = seq.incrementAndGet().toString()
         scanSessions[id] = ScanSession(dpi, colorMode)
+        runCatching { handlers.onRequest("POST", "/eSCL/ScanJobs", "session $id ${dpi}dpi $colorMode") }
         respond(sock, 201, ByteArray(0), "text/plain",
             mapOf("Location" to "/eSCL/ScanJobs/$id/NextDocument"))
     }
@@ -444,10 +457,14 @@ class PhoneBridgeServer(
         // waits behind the running job instead of failing.
         val jpeg = runCatching { handlers.scan(session.dpi, session.colorMode) }.getOrNull()
         if (jpeg == null || jpeg.size < 1000) {
+            runCatching { handlers.onRequest("GET", "…/NextDocument", "SCAN FAILED") }
             respond(sock, 500, "scan failed".toByteArray(), "text/plain")
             return
         }
         session.pages++
+        runCatching {
+            handlers.onRequest("GET", "…/NextDocument", "page ${session.pages} ${jpeg.size / 1024}KB")
+        }
         respond(sock, 200, jpeg, "image/jpeg")
     }
 
