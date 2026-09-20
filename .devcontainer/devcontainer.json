@@ -1,6 +1,6 @@
 {
   "name": "M175a Studio",
-  "image": "mcr.microsoft.com/devcontainers/android:1.2.1",
+  "image": "mcr.microsoft.com/devcontainers/java:1-17-bookworm",
   "features": {
     "ghcr.io/devcontainers/features/java:1": {
       "version": "17",

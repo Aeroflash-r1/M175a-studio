@@ -557,23 +557,46 @@ class MainActivity : ComponentActivity() {
                     }
                     HorizontalDivider()
                     SectionTitle("Document")
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = copies.toString(),
-                            onValueChange = { copies = it.toIntOrNull()?.coerceIn(1, 99) ?: 1 },
-                            label = { Text("Copies") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f))
-                        OutlinedTextField(
-                            value = pageRangeExpr,
-                            onValueChange = { pageRangeExpr = it.take(40) },
-                            label = { Text("Pages") },
-                            singleLine = true,
-                            placeholder = { Text("1-3, 5, 8-10") },
-                            modifier = Modifier.weight(2f))
+                    // Narrow phones (<340dp): side-by-side fields squeeze
+                    // and clip — stack them full-width instead.
+                    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                        if (maxWidth < 340.dp) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedTextField(
+                                    value = copies.toString(),
+                                    onValueChange = { copies = it.toIntOrNull()?.coerceIn(1, 99) ?: 1 },
+                                    label = { Text("Copies") },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    modifier = Modifier.fillMaxWidth())
+                                OutlinedTextField(
+                                    value = pageRangeExpr,
+                                    onValueChange = { pageRangeExpr = it.take(40) },
+                                    label = { Text("Pages") },
+                                    singleLine = true,
+                                    placeholder = { Text("1-3, 5, 8-10") },
+                                    modifier = Modifier.fillMaxWidth())
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedTextField(
+                                    value = copies.toString(),
+                                    onValueChange = { copies = it.toIntOrNull()?.coerceIn(1, 99) ?: 1 },
+                                    label = { Text("Copies") },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    modifier = Modifier.weight(1f))
+                                OutlinedTextField(
+                                    value = pageRangeExpr,
+                                    onValueChange = { pageRangeExpr = it.take(40) },
+                                    label = { Text("Pages") },
+                                    singleLine = true,
+                                    placeholder = { Text("1-3, 5, 8-10") },
+                                    modifier = Modifier.weight(2f))
+                            }
+                        }
                     }
                     HelperText("Pages: ranges like 1-3, 5 or empty for all")
                     HorizontalDivider()
@@ -731,8 +754,15 @@ class MainActivity : ComponentActivity() {
                         HorizontalDivider()
                         Text("Recent jobs", style = MaterialTheme.typography.titleSmall)
                         jobHistory.take(5).forEach { j ->
-                            ListItem(headlineContent = { Text(j.title) },
-                                supportingContent = { Text("${j.sub} | ${j.dpi} dpi") },
+                            ListItem(
+                                headlineContent = {
+                                    Text(j.title, maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis)
+                                },
+                                supportingContent = {
+                                    Text("${j.sub} | ${j.dpi} dpi", maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis)
+                                },
                                 trailingContent = {
                                     if (j.kind == "pdf") TextButton(onClick = {
                                         printPdf(Uri.parse(j.data), duplex = false,
@@ -909,7 +939,8 @@ class MainActivity : ComponentActivity() {
                     Column(Modifier.padding(16.dp)) {
                         Text("Lifetime stats", style = MaterialTheme.typography.titleSmall)
                         Text("${u.total ?: "?"} pages printed  |  ${u.color ?: "?"} color  |  ${u.mono ?: "?"} mono",
-                            style = MaterialTheme.typography.bodyMedium)
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
@@ -1174,14 +1205,23 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.fillMaxWidth()
                                 .horizontalScroll(rememberScrollState())) {
                             thumbs.forEachIndexed { i, bmp ->
+                                // True page aspect per thumbnail (Fit, never
+                                // Crop): the old fixed 120x160 Crop box cut
+                                // page edges off and stretched non-A4 pages.
+                                val aspect = bmp.width.toFloat() /
+                                        bmp.height.coerceAtLeast(1)
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     Image(bmp.asImageBitmap(), "page ${i + 1}",
-                                        Modifier.width(120.dp).height(160.dp)
+                                        Modifier.width(112.dp)
+                                            .aspectRatio(aspect)
+                                            .background(
+                                                MaterialTheme.colorScheme.surfaceVariant,
+                                                RoundedCornerShape(8.dp))
                                             .border(1.dp,
                                                 MaterialTheme.colorScheme.outlineVariant,
                                                 RoundedCornerShape(8.dp))
                                             .clip(RoundedCornerShape(8.dp)),
-                                        contentScale = ContentScale.Crop)
+                                        contentScale = ContentScale.Fit)
                                     Text("p${i + 1}",
                                         style = MaterialTheme.typography.bodySmall)
                                 }

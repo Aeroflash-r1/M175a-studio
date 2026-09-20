@@ -8,6 +8,11 @@
   first launch, and re-askable from Setup → Notifications (incl. app-Settings
   path when permanently denied)
 - Setup tab now carries the full phone-bridge guide (host steps + client steps)
+- 300dpi centering fixed: SetPageOrigin/SetCursor are dpi-unit values and were
+  hardcoded from the 600dpi capture (double physical offset at 300dpi) — now
+  scaled per dpi on both JPEG and fast-mono paths, with byte-level tests
+- Preview thumbnails keep true page aspect (Fit, no crop); Copies/Pages fields
+  stack on narrow screens; long job/stat lines ellipsize instead of clipping
 
 Android app (`com.m175astudio`, versionCode 1) + PC bridge + reverse-engineering DevKit.
 

@@ -128,6 +128,23 @@ object PclxlPage {
     private const val COLORDEPTH_8BIT = 2
 
     /**
+     * Driver-exact geometry anchors, captured at 600 dpi. BeginSession sets
+     * UnitsPerMeasure=(dpi,dpi), so these MUST scale with dpi or the page
+     * sits off-center: at 300 dpi the raw 100,100/0,40 values are TWICE the
+     * physical offset (0.333" vs 0.167"), shoving the image down-right.
+     */
+    private const val ORIGIN_600 = 100
+    private const val CURSOR_Y_600 = 40
+
+    internal fun originXY(dpi: Int): Pair<Int, Int> {
+        val o = ORIGIN_600 * dpi / 600
+        return o to o
+    }
+
+    internal fun cursorXY(dpi: Int): Pair<Int, Int> =
+        0 to (CURSOR_Y_600 * dpi / 600)
+
+    /**
      * Per-page geometry resolved from dpi + paper (printer units).
      * Destinations come from [Paper], whose printable areas are derived
      * from the captured A4 driver geometry (4760 x 6735 at 600 dpi).
@@ -239,7 +256,9 @@ object PclxlPage {
             mediaName.toByteArray(Charsets.ISO_8859_1)))
         w.write(u8(OP_BEGIN_PAGE))
 
-        w.write(sint16xyAttr(A_PAGE_ORIGIN, 100, 100))
+        // dpi-scaled (driver values were captured at 600 dpi)
+        val (ox, oy) = originXY(geom.dpi)
+        w.write(sint16xyAttr(A_PAGE_ORIGIN, ox, oy))
         w.write(u8(OP_SET_PAGE_ORIGIN))
 
         // ops 5-7: UNIFIED CURSOR — required before images (IMAGE error fix)
@@ -278,8 +297,10 @@ object PclxlPage {
         w.write(u8(OP_PUSH_GS))
         w.write(u8(OP_SET_CLIP_TO_PAGE))
 
-        // ops 19-23: in-context paint setup + cursor (driver-exact)
-        w.write(sint16xyAttr(A_POINT, 0, 40))
+        // ops 19-23: in-context paint setup + cursor (driver-exact,
+        // dpi-scaled like the page origin above)
+        val (cx, cy) = cursorXY(geom.dpi)
+        w.write(sint16xyAttr(A_POINT, cx, cy))
         w.write(u8(OP_SET_CURSOR))
         w.write(ubyteAttr(A_TX_MODE, 0))
         w.write(u8(OP_SET_PATTERN_TX_MODE))
@@ -337,7 +358,9 @@ object PclxlPage {
             mediaName.toByteArray(Charsets.ISO_8859_1)))
         w.write(u8(OP_BEGIN_PAGE))
 
-        w.write(sint16xyAttr(A_PAGE_ORIGIN, 100, 100))
+        // dpi-scaled like the JPEG path above
+        val (mox, moy) = originXY(geom.dpi)
+        w.write(sint16xyAttr(A_PAGE_ORIGIN, mox, moy))
         w.write(u8(OP_SET_PAGE_ORIGIN))
 
         w.write(ubyteAttr(A_TEXT_OBJECTS, 0))
@@ -373,7 +396,9 @@ object PclxlPage {
         w.write(u8(OP_PUSH_GS))
         w.write(u8(OP_SET_CLIP_TO_PAGE))
 
-        w.write(sint16xyAttr(A_POINT, 0, 40))
+        // dpi-scaled cursor like the JPEG path
+        val (mcx, mcy) = cursorXY(geom.dpi)
+        w.write(sint16xyAttr(A_POINT, mcx, mcy))
         w.write(u8(OP_SET_CURSOR))
         w.write(ubyteAttr(A_TX_MODE, 0))
         w.write(u8(OP_SET_PATTERN_TX_MODE))
