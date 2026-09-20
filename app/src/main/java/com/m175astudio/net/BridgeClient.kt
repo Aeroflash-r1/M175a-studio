@@ -61,15 +61,20 @@ class BridgeClient(val host: String, val port: Int = 8080) {
      * IPP Print-Job upload. [documentFormat] must be one the bridge
      * advertises: application/pdf or application/octet-stream (JPEG/PNG).
      * Returns true when the bridge replies status successful-ok (0x0000).
+     *
+     * Fixed-length streaming is mandatory: without it HttpURLConnection
+     * sends chunked bodies that naive servers read as EMPTY (zero-byte
+     * document -> rejected job). Timeout covers render + engine time.
      */
     fun printDocument(doc: ByteArray, documentFormat: String,
                       jobName: String = "Android Wi-Fi Job",
-                      timeoutMs: Int = 120_000): Boolean {
+                      timeoutMs: Int = 900_000): Boolean {
         return try {
             val req = buildIppPrintJob(doc, documentFormat, jobName)
             val c = (URL("${baseUrl()}/ipp/print").openConnection() as HttpURLConnection)
             c.requestMethod = "POST"
             c.doOutput = true
+            c.setFixedLengthStreamingMode(req.size)
             c.setRequestProperty("Content-Type", "application/ipp")
             c.connectTimeout = 10_000
             c.readTimeout = timeoutMs
@@ -139,12 +144,16 @@ class BridgeClient(val host: String, val port: Int = 8080) {
  <scan:XResolution><pwg:Number>$dpi</pwg:Number></scan:XResolution>
  <scan:YResolution><pwg:Number>$dpi</pwg:Number></scan:YResolution>
 </scan:ScanSettings>""".toByteArray(Charsets.UTF_8)
+        // The scan itself runs during the GET below; give the whole flow a
+        // dpi-aware budget (600dpi glass scans take minutes on this engine).
+        val budget = maxOf(timeoutMs, if (dpi > 300) 600_000 else 300_000)
         val post = (URL("${baseUrl()}/eSCL/ScanJobs").openConnection() as HttpURLConnection)
         post.requestMethod = "POST"
         post.doOutput = true
+        post.setFixedLengthStreamingMode(xml.size)
         post.setRequestProperty("Content-Type", "text/xml")
         post.connectTimeout = 10_000
-        post.readTimeout = timeoutMs
+        post.readTimeout = budget
         post.outputStream.use { it.write(xml) }
         if (post.responseCode != 201) {
             val err = runCatching {
@@ -157,7 +166,7 @@ class BridgeClient(val host: String, val port: Int = 8080) {
         val get = (URL(if (loc.startsWith("http")) loc else baseUrl() + loc)
             .openConnection() as HttpURLConnection)
         get.connectTimeout = 10_000
-        get.readTimeout = timeoutMs
+        get.readTimeout = budget
         get.connect()
         if (get.responseCode != 200) throw java.io.IOException("bridge scan doc HTTP ${get.responseCode}")
         val jpeg = get.inputStream.use { it.readBytes() }

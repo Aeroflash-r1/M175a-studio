@@ -13,6 +13,13 @@
   scaled per dpi on both JPEG and fast-mono paths, with byte-level tests
 - Preview thumbnails keep true page aspect (Fit, no crop); Copies/Pages fields
   stack on narrow screens; long job/stat lines ellipsize instead of clipping
+- Critical print fix: preview used RGB_565, which PdfRenderer rejects
+  ("Unsupported pixel format") — every PDF print died at preview; now ARGB_8888
+- Explicit Colour/Greyscale selector; cancel button on the flip dialog;
+  stale USB cancel latch cleared at every job start; zero-write/blocked-drain guards
+- Phone-bridge reliability: fixed-length uploads + chunked-body decoding
+  (chunked posts arrived as zero bytes), engine-realistic timeouts
+  (print 15 min, scan 5/10 min), live serving-IP display, loopback self-check
 
 Android app (`com.m175astudio`, versionCode 1) + PC bridge + reverse-engineering DevKit.
 

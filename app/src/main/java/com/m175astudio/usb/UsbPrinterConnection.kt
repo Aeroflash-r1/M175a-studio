@@ -129,12 +129,16 @@ class UsbPrinterConnection(private val context: Context) {
     fun sendPrint(data: ByteArray, offset: Int = 0, len: Int = data.size): Int {
         val ep = endpoint(EP_PRINT_OUT) ?: return -1
         val deadline = System.currentTimeMillis() + 300_000 // 5 min per chunk worst case
+        var zeroWrites = 0
         while (true) {
             if (cancelRequested) return -2
             val w = connection!!.bulkTransfer(ep, data, offset, len, 10_000)
-            if (w >= 0) return w
-            if (cancelRequested) return -2
-            if (System.currentTimeMillis() > deadline) return -1
+            if (w > 0) return w
+            // w == 0: nothing moved — callers add the return to their offset,
+            // so returning 0 would spin them forever. Back off, then fail.
+            if (w == 0 && ++zeroWrites > 200) return -1
+            if (w < 0 && cancelRequested) return -2
+            if (w < 0 && System.currentTimeMillis() > deadline) return -1
             Thread.sleep(50) // still back-pressured — keep WAITING, never resend
         }
     }

@@ -77,10 +77,22 @@ class BidiHttpClient(private val usb: UsbPrinterConnection) {
         return if (out.size() == 0) null else out.toByteArray()
     }
 
-    /** Clears any queued status frames so a new GET gets ITS OWN reply. */
+    /**
+     * Clears queued status frames so a new GET gets ITS OWN reply.
+     * BOUNDED: the printer chatters status events continuously, so an
+     * uncapped pump can spin forever (this once hung duplex's engine-idle
+     * wait at "Finishing Side 1…" with data always available).
+     */
     private fun drainStale() {
         val junk = ByteArray(4096)
-        while (usb.recvBidi(junk) > 0) { /* keep pumping */ }
+        val t0 = System.currentTimeMillis()
+        var drained = 0
+        var n = usb.recvBidi(junk)
+        while (n > 0 && drained < 256 * 1024 &&
+            System.currentTimeMillis() - t0 < 3000) {
+            drained += n
+            n = usb.recvBidi(junk)
+        }
     }
 
     private fun indexOfDoubleCrlf(b: ByteArray): Int {

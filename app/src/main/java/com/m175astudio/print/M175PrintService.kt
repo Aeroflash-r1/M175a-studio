@@ -177,6 +177,7 @@ class M175PrintService : PrintService() {
             }
             if (plan.isEmpty()) { job.fail("no pages selected"); return }
 
+            conn.cancelRequested = false // never inherit a stale cancel latch
             JobControl.begin()
             val total = plan.size
             var idx = 0

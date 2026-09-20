@@ -166,8 +166,16 @@ class PhoneBridgeServer(
                 val c = h.indexOf(':')
                 if (c > 0) headers[h.substring(0, c).trim().lowercase()] = h.substring(c + 1).trim()
             }
-            val len = headers["content-length"]?.toIntOrNull()?.coerceIn(0, 100 * 1024 * 1024) ?: 0
-            val body = if (len > 0) readExact(ins, len) else ByteArray(0)
+            val chunked = headers["transfer-encoding"]
+                ?.lowercase()?.contains("chunked") == true
+            val body = when {
+                chunked -> HttpChunked.decodeBody(ins)
+                else -> {
+                    val len = headers["content-length"]?.toIntOrNull()
+                        ?.coerceIn(0, 100 * 1024 * 1024) ?: 0
+                    if (len > 0) readExact(ins, len) else ByteArray(0)
+                }
+            }
             route(sock, Request(method, path, headers, body))
         } catch (_: Exception) {
             runCatching { sock.close() }

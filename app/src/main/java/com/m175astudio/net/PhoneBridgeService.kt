@@ -273,6 +273,7 @@ class PhoneBridgeService : Service() {
 
     private fun doPrint(doc: ByteArray, hint: String): Boolean {
         val usb = conn?.takeIf { it.isOpen } ?: return false
+        usb.cancelRequested = false // never inherit a stale cancel latch
         val isPdf = hint == "pdf" ||
                 (doc.size >= 4 && doc[0] == '%'.code.toByte() && doc[1] == 'P'.code.toByte())
         return try {

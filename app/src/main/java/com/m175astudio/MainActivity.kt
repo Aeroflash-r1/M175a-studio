@@ -228,7 +228,18 @@ class MainActivity : ComponentActivity() {
         phoneBridgeInfo = "Starting on http://$ip:$bridgePort…"
         lifecycleScope.launch {
             kotlinx.coroutines.delay(2000)
+            // Loopback self-check: proves the socket is really serving on
+            // this phone (catches bind/port failures the service missed).
+            val loopbackOk = withContext(Dispatchers.IO) {
+                runCatching {
+                    BridgeClient("127.0.0.1", bridgePort).testConnection()
+                }.getOrDefault(false)
+            }
             syncBridgeUi()
+            if (PhoneBridgeService.isHosting && !loopbackOk) {
+                phoneBridgeInfo += " NOTE: not reachable via loopback — " +
+                        "check hotspot/Wi-Fi is on."
+            }
             if (!PhoneBridgeService.isHosting) {
                 // Start failed (no USB permission, port busy…) — take USB back.
                 phoneBridgeRunning = false
@@ -237,12 +248,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Mirrors service state into Setup UI (called on resume + after toggles). */
+    /**
+     * Mirrors service state into Setup UI (called on resume + after toggles).
+     * The address is recomputed LIVE every time: the start-time IP goes stale
+     * when the hotspot is toggled after hosting began (the classic "Test
+     * fails although hosting says serving" trap). The server binds 0.0.0.0,
+     * so the current address is always the right one to show.
+     */
     private fun syncBridgeUi() {
         phoneBridgeRunning = PhoneBridgeService.isHosting
         phoneBridgeInfo = when {
             PhoneBridgeService.isHosting -> {
-                val url = PhoneBridgeService.servingUrl ?: "starting…"
+                val url = liveBridgeUrl()
                 val extra = listOfNotNull(
                     PhoneBridgeService.currentJob,
                     if (PhoneBridgeService.queueDepth > 0)
@@ -257,6 +274,16 @@ class MainActivity : ComponentActivity() {
                 "Failed: ${PhoneBridgeService.lastError}"
             else -> "Stopped"
         }
+    }
+
+    /** Current serving address (live IP — hotspot toggles change it). */
+    private fun liveBridgeUrl(): String {
+        val saved = PhoneBridgeService.servingUrl
+        val port = saved?.substringAfterLast(":")?.toIntOrNull() ?: bridgePort
+        val ip = DeviceIp.best()
+            ?: saved?.substringAfter("://")?.substringBefore(":")
+            ?: "this-phone"
+        return "http://$ip:$port"
     }
 
     // -------- scan settings (persisted)
@@ -524,12 +551,18 @@ class MainActivity : ComponentActivity() {
                     HelperText("Draft 300 is ~4x faster with identical text quality. " +
                             "Best 600 for photos/fine graphics.")
                     ChipFlow {
+                        FilterChip(selected = !grayscale,
+                            onClick = {
+                                grayscale = false
+                                prefs.edit().putBoolean("printGray", false).apply()
+                            },
+                            label = { Text("Colour") })
                         FilterChip(selected = grayscale,
                             onClick = {
-                                grayscale = !grayscale
-                                prefs.edit().putBoolean("printGray", grayscale).apply()
+                                grayscale = true
+                                prefs.edit().putBoolean("printGray", true).apply()
                             },
-                            label = { Text(if (grayscale) "Greyscale ✓" else "Greyscale") })
+                            label = { Text("Greyscale") })
                     }
                     if (grayscale) {
                         ChipFlow {
@@ -1276,7 +1309,17 @@ class MainActivity : ComponentActivity() {
                     flipGate?.complete(Unit)
                 }) { Text("Print side 2") }
             },
-            dismissButton = {},
+            // No busy dialog is visible during the flip (it is hidden so it
+            // cannot cover this prompt) — without this button a duplex job
+            // could never be cancelled while waiting for the flip.
+            dismissButton = {
+                TextButton(onClick = {
+                    showFlipDialog = false
+                    JobControl.requestCancel()
+                    usb.cancelRequested = true
+                    flipGate?.complete(Unit)
+                }) { Text("Cancel job") }
+            },
         )
     }
 
@@ -1522,7 +1565,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             var ok = false
             try {
-                JobControl.begin()
+                beginUsbJob()
                 scanLog("printImages: ${uris.size} image(s) dpi=$printDpi gray=$grayscale " +
                         "fit=${pl.fitMode} orient=${pl.orientation}")
                 val res = withContext(Dispatchers.IO) {
@@ -1760,7 +1803,7 @@ class MainActivity : ComponentActivity() {
                     val useFastMono = grayscale && fastMono && up == 1 &&
                             placeFit == 0 && placeMargin == 0 && placeOrient == 0
                     PageRenderer.multipageHint = plan2.size > 3 && grayscale && !useFastMono
-                    JobControl.begin()
+                    beginUsbJob()
                     scanLog("printPdf: single-sided dpi=$printDpi gray=$grayscale " +
                             "fastMono=$useFastMono pages=${plan2.size} copies=$reps " +
                             "(printer) rev=$reverseOrder blank=$skipBlank up=$up")
@@ -1898,7 +1941,7 @@ class MainActivity : ComponentActivity() {
                             "Booklet needs 4+ pages", Toast.LENGTH_SHORT).show()
                         return@launch
                     }
-                    JobControl.begin()
+                    beginUsbJob()
                     scanLog("printPdf: booklet ${pages.size} pages -> " +
                             "${PageLayout.bookletSheets(pages.size).size} sheets")
                     val bres = withContext(Dispatchers.IO) {
@@ -1950,7 +1993,7 @@ class MainActivity : ComponentActivity() {
                             "Duplex needs 2+ pages", Toast.LENGTH_SHORT).show()
                         return@launch
                     }
-                    JobControl.begin()
+                    beginUsbJob()
                     scanLog("printPdf: duplex ${pages.size} pages")
                     setBusy("Side 1 - even pages...")
                     val dres = withContext(Dispatchers.IO) {
@@ -2166,6 +2209,16 @@ class MainActivity : ComponentActivity() {
         out.writeTo(baos)
         out.close()
         return baos.toByteArray()
+    }
+
+    /**
+     * Start of a USB job: fresh JobControl session AND a cleared cancel
+     * latch. A stale cancelRequested=true (e.g. after cancelling at the
+     * flip prompt) would otherwise abort the NEXT job on its first chunk.
+     */
+    private fun beginUsbJob() {
+        usb.cancelRequested = false
+        JobControl.begin()
     }
 
     /** PJL EOJ + RESET + UEL - unwedges a dead job / stuck LCD. */

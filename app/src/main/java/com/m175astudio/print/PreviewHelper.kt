@@ -13,9 +13,12 @@ import kotlin.math.roundToInt
  * print (after range/parity/reverse filtering), so the user sees the
  * document BEFORE any USB/IPP bytes move.
  *
- * Thumbnails render at ~100 dpi (scale 100/72) in RGB_565 — ~8x cheaper
- * than print bitmaps — capped at [maxPages] so a 200-page PDF previews
- * instantly. Full-res rendering still happens only after Confirm.
+ * Thumbnails render at ~100 dpi (scale 100/72), capped at [maxPages] so a
+ * 200-page PDF previews instantly. Full-res rendering happens after Confirm.
+ *
+ * MUST be ARGB_8888: PdfRenderer.Page.render() throws
+ * IllegalArgumentException("Unsupported pixel format") for anything else —
+ * RGB_565 here once broke ALL PDF printing (every job goes through preview).
  */
 object PreviewHelper {
 
@@ -34,7 +37,7 @@ object PreviewHelper {
                     renderer.openPage(p - 1).use { page ->
                         val w = (page.width * scale).roundToInt().coerceAtLeast(32)
                         val h = (page.height * scale).roundToInt().coerceAtLeast(32)
-                        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565)
+                        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                         Canvas(bmp).drawColor(Color.WHITE)
                         page.render(bmp, null, null,
                             PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
