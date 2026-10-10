@@ -120,7 +120,7 @@ object Pcl5MonoWriter {
         val monoData = convertToMono(bitmap, targetWidth, targetHeight)
         
         // Then apply RLE compression
-        return compressRle(monoData)
+        return compressRle(monoData, targetWidth, targetHeight)
     }
 
     /**
@@ -172,15 +172,12 @@ object Pcl5MonoWriter {
      * - sign=1: next (count+1) pixels are black (1)
      * Max run: 127 pixels (0x7F)
      */
-    private fun compressRle(monoData: ByteArray): ByteArray {
+    private fun compressRle(monoData: ByteArray, width: Int, height: Int): ByteArray {
         val out = ByteArrayOutputStream(monoData.size)
         
-        val bytesPerRow = (paper.destUnits(300).first + 7) / 8
-        val totalBytes = bytesPerRow * paper.destUnits(300).second
+        val totalBits = width * height
         
         var bitIndex = 0
-        val totalBits = totalBytes * 8
-        
         while (bitIndex < totalBits) {
             // Get current bit value
             val byteIndex = bitIndex / 8
@@ -191,7 +188,7 @@ object Pcl5MonoWriter {
                 0
             }
             
-            // Find run length
+            // Find run length (max 127)
             var runLength = 0
             while (runLength < 127 && bitIndex + runLength < totalBits) {
                 val testByteIndex = (bitIndex + runLength) / 8
