@@ -227,9 +227,11 @@ object Pcl5MonoWriter {
     ): ByteArray {
         val out = ByteArrayOutputStream(bitmaps.size * 1024 * 1024) // ~1MB per page max
         
+        writeMonoJobHeader(out, dpi, copies, jobName)
         for (bitmap in bitmaps) {
-            writeMonoPage(out, bitmap, dpi, paper, copies)
+            writeMonoPage(out, bitmap, dpi, paper)
         }
+        writeMonoJobFooter(out, jobName)
         
         return out.toByteArray()
     }
@@ -245,8 +247,10 @@ object Pcl5MonoWriter {
         jobName: String = "M175-Mono",
         copies: Int = 1
     ) {
+        writeMonoJobHeader(out, dpi, copies, jobName)
         for (bitmap in bitmaps) {
-            writeMonoPage(out, bitmap, dpi, paper, copies)
+            writeMonoPage(out, bitmap, dpi, paper)
         }
+        writeMonoJobFooter(out, jobName)
     }
 }
