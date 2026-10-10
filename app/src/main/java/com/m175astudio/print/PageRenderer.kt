@@ -1,6 +1,7 @@
 package com.m175astudio.print
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
@@ -188,6 +189,15 @@ object PageRenderer {
     /** JPEG-encodes an already-composed page bitmap (PagePlacement path). */
     fun finishPlacedPage(placed: Bitmap, grayscale: Boolean): RenderedPage =
         toJpegPage(placed, grayscale)
+
+    /**
+     * Converts JPEG byte array back to Bitmap for PCL5 mono encoding.
+     * Required because PCL5 mono needs 1-bit RLE data, not JPEG.
+     */
+    fun jpegToBitmap(jpeg: ByteArray): Bitmap {
+        return BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: 
+               throw IllegalStateException("Failed to decode JPEG")
+    }
 
     /**
      * Payload size drives two real costs: USB time AND the printer's own JPEG

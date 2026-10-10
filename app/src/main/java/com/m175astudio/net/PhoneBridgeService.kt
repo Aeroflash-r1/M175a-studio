@@ -198,11 +198,11 @@ class PhoneBridgeService : Service() {
                 onRequest = { m, p, n ->
                     lastRemoteHit = "$m $p $n".trim()
                 },
-                printDocument = { doc, hint ->
+                printDocument = { doc, hint, attrs ->
                     // Block the HTTP thread until our FIFO turn comes
                     // (office queue waits instead of failing fast).
                     engine.submit<Boolean>("print ${doc.size / 1024}KB") {
-                        doPrint(doc, hint)
+                        doPrint(doc, hint, attrs)
                     }.get(30, TimeUnit.MINUTES)
                 },
                 scan = { dpi, mode ->
@@ -282,19 +282,31 @@ class PhoneBridgeService : Service() {
         return PagePlacement.Placement(fit, orient, m, (pos % 3) / 2f, (pos / 3) / 2f)
     }
 
-    private fun doPrint(doc: ByteArray, hint: String): Boolean {
+    private fun doPrint(doc: ByteArray, hint: String, attrs: Map<String, String> = emptyMap()): Boolean {
         val usb = conn?.takeIf { it.isOpen } ?: return false
         usb.cancelRequested = false // never inherit a stale cancel latch
         val isPdf = hint == "pdf" ||
                 (doc.size >= 4 && doc[0] == '%'.code.toByte() && doc[1] == 'P'.code.toByte())
+        
+        // **EXTRACT SETTINGS FROM IPP ATTRIBUTES OR FALL BACK TO HOST SETTINGS**
+        val s = settings()
+        val dpi = attrs["dpi"]?.toIntOrNull() ?: s["printDpi"] as Int
+        val gray = when (attrs["colorMode"]?.lowercase()) {
+            "monochrome", "grayscale", "blackandwhite1" -> true
+            else -> s["printGray"] as Boolean
+        }
+        val paperName = attrs["paper"] ?: s["paperName"] as String
+        val paper = Paper.fromSaved(paperName)
+        val copies = attrs["copies"]?.toIntOrNull() ?: 1
+        
         return try {
             JobControl.begin()
             val ok = if (isPdf) {
                 val f = File(cacheDir, "bridge-print.pdf")
                 f.writeBytes(doc)
-                printPdfFile(usb, f)
+                printPdfFile(usb, f, dpi, gray, paper, copies)
             } else {
-                printImageBytes(usb, doc)
+                printImageBytes(usb, doc, dpi, gray, paper, copies)
             }
             if (ok) {
                 served.incrementAndGet()
@@ -310,28 +322,25 @@ class PhoneBridgeService : Service() {
         }
     }
 
-    private fun printPdfFile(usb: UsbPrinterConnection, pdf: File): Boolean {
-        val s = settings()
-        val dpi = s["printDpi"] as Int
-        val gray = s["printGray"] as Boolean
-        val paper = Paper.fromSaved(s["paperName"] as String)
+    private fun printPdfFile(usb: UsbPrinterConnection, pdf: File,
+                              dpi: Int, grayscale: Boolean, paper: Paper, copies: Int = 1): Boolean {
         ParcelFileDescriptor.open(pdf, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
             PdfRenderer(fd).use { renderer ->
                 val total = renderer.pageCount
                 if (total <= 0) return false
                 // JPEG-only raster: 1-bit RLE dies on the panel with
                 // "PCL XL ERROR / Subsystem: image" (cheetraster.e).
-                PageRenderer.multipageHint = total > 3 && gray
+                PageRenderer.multipageHint = total > 3 && grayscale
                 try {
                     val scale = dpi / 72f
                     var idx = 0
                     val res = PrintTransmitter.sendPages(
-                        usb, dpi, gray, "PHONE-BRIDGE", paper = paper,
+                        usb, dpi, grayscale, "PHONE-BRIDGE", paper = paper, copies = copies,
                         source = { _ ->
                             if (idx >= total) null
                             else renderer.openPage(idx).use { page ->
                                 idx++
-                                val rp = PageRenderer.renderPageToJpeg(page, scale, gray)
+                                val rp = PageRenderer.renderPageToJpeg(page, scale, grayscale)
                                 PrintTransmitter.RenderedPage(
                                     rp.jpeg, rp.width, rp.height, idx, total)
                             }
@@ -345,20 +354,17 @@ class PhoneBridgeService : Service() {
         }
     }
 
-    private fun printImageBytes(usb: UsbPrinterConnection, doc: ByteArray): Boolean {
-        val s = settings()
-        val dpi = s["printDpi"] as Int
-        val gray = s["printGray"] as Boolean
-        val paper = Paper.fromSaved(s["paperName"] as String)
+    private fun printImageBytes(usb: UsbPrinterConnection, doc: ByteArray,
+                                dpi: Int, grayscale: Boolean, paper: Paper, copies: Int = 1): Boolean {
         val src = BitmapFactory.decodeByteArray(doc, 0, doc.size) ?: return false
         try {
             val (dw, dh) = paper.pagePx(dpi, false)
-            val placed = PagePlacement.render(src, dw, dh, placementOf(s), dpi)
+            val placed = PagePlacement.render(src, dw, dh, placementOf(settings()), dpi)
             src.recycle()
-            val page = PageRenderer.finishPlacedPage(placed, gray)
+            val page = PageRenderer.finishPlacedPage(placed, grayscale)
             val stream = PclxlPage.buildStream(
                 listOf(page.jpeg), page.width, page.height,
-                dpi = dpi, grayscale = gray, jobName = "PHONE-BRIDGE", paper = paper)
+                dpi = dpi, grayscale = grayscale, jobName = "PHONE-BRIDGE", paper = paper)
             return PageRenderer.transmit(usb, stream) is PrintTransmitter.Result.Ok
         } finally {
             runCatching { src.recycle() }

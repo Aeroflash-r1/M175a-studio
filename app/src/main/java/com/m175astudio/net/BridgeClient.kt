@@ -112,9 +112,13 @@ class BridgeClient(val host: String, val port: Int = 8080) {
      */
     fun printDocument(doc: ByteArray, documentFormat: String,
                       jobName: String = "Android Wi-Fi Job",
+                      dpi: Int = 300,
+                      grayscale: Boolean = false,
+                      paperName: String = "A4",
+                      copies: Int = 1,
                       timeoutMs: Int = 900_000): Boolean {
         return try {
-            val req = buildIppPrintJob(doc, documentFormat, jobName)
+            val req = buildIppPrintJob(doc, documentFormat, jobName, dpi, grayscale, paperName, copies)
             val c = (URL("${baseUrl()}/ipp/print").openConnection() as HttpURLConnection)
             c.requestMethod = "POST"
             c.doOutput = true
@@ -131,15 +135,20 @@ class BridgeClient(val host: String, val port: Int = 8080) {
         } catch (_: Exception) { false }
     }
 
-    fun printPdf(pdf: ByteArray, jobName: String = "Android PDF"): Boolean {
-        return printDocument(pdf, "application/pdf", jobName)
+    fun printPdf(pdf: ByteArray, jobName: String = "Android PDF",
+                 dpi: Int = 300, grayscale: Boolean = false,
+                 paperName: String = "A4", copies: Int = 1): Boolean {
+        return printDocument(pdf, "application/pdf", jobName, dpi, grayscale, paperName, copies)
     }
 
-    fun printImage(img: ByteArray, jobName: String = "Android Image"): Boolean {
-        return printDocument(img, "application/octet-stream", jobName)
+    fun printImage(img: ByteArray, jobName: String = "Android Image",
+                   dpi: Int = 300, grayscale: Boolean = false,
+                   paperName: String = "A4", copies: Int = 1): Boolean {
+        return printDocument(img, "application/octet-stream", jobName, dpi, grayscale, paperName, copies)
     }
 
-    private fun buildIppPrintJob(doc: ByteArray, format: String, jobName: String): ByteArray {
+    private fun buildIppPrintJob(doc: ByteArray, format: String, jobName: String,
+                                dpi: Int, grayscale: Boolean, paperName: String, copies: Int): ByteArray {
         val out = ByteArrayOutputStream(512 + doc.size)
         fun u16(v: Int) { out.write((v shr 8) and 0xFF); out.write(v and 0xFF) }
         fun u32(v: Int) {
@@ -153,6 +162,13 @@ class BridgeClient(val host: String, val port: Int = 8080) {
             val vb = value.toByteArray(Charsets.UTF_8)
             u16(vb.size); out.write(vb)
         }
+        fun attrInt(tag: Int, name: String, value: Int) {
+            out.write(tag)
+            val nb = name.toByteArray(Charsets.UTF_8)
+            u16(nb.size); out.write(nb)
+            u16(4)
+            u32(value)
+        }
         out.write(1); out.write(1) // IPP 1.1
         u16(0x0002) // Print-Job
         u32(1) // request-id
@@ -163,6 +179,13 @@ class BridgeClient(val host: String, val port: Int = 8080) {
         attr(0x42, "requesting-user-name", "android")
         attr(0x42, "job-name", jobName)
         attr(0x49, "document-format", format)
+        
+        // **ADD PRINT SETTINGS AS IPP ATTRIBUTES**
+        attrInt(0x21, "print-quality", dpi)
+        attr(0x42, "print-color-mode", if (grayscale) "monochrome" else "color")
+        attr(0x42, "media", paperName)
+        if (copies > 1) attrInt(0x21, "copies", copies)
+        
         out.write(0x03) // end-of-attributes
         out.write(doc)
         return out.toByteArray()
@@ -237,8 +260,10 @@ class BridgeClient(val host: String, val port: Int = 8080) {
      * splits the PDF client-side with PdfDocument and sends pass1 then pass2).
      * Caller shows the flip prompt between the two calls.
      */
-    fun printDuplexPass(pdfPass: ByteArray, passLabel: String): Boolean =
-        printPdf(pdfPass, "Wi-Fi Duplex $passLabel")
+    fun printDuplexPass(pdfPass: ByteArray, passLabel: String,
+                        dpi: Int = 300, grayscale: Boolean = false,
+                        paperName: String = "A4", copies: Int = 1): Boolean =
+        printPdf(pdfPass, "Wi-Fi Duplex $passLabel", dpi, grayscale, paperName, copies)
 
     companion object {
         /** Minimal flat-JSON string/int extractor (avoids org.json on old APIs). */

@@ -43,10 +43,11 @@ class PhoneBridgeServer(
         val jobsServed: () -> Int = { 0 },
         /**
          * Print raw document bytes over USB. [formatHint] is "pdf", "jpeg"
-         * or "raw" (sniffed from magic + IPP attrs). Blocking; returns true
-         * when the engine accepted the job.
+         * or "raw" (sniffed from magic + IPP attrs). [attrs] contains IPP
+         * job attributes (dpi, color-mode, media, copies). Blocking; returns
+         * true when the engine accepted the job.
          */
-        val printDocument: (doc: ByteArray, formatHint: String) -> Boolean,
+        val printDocument: (doc: ByteArray, formatHint: String, attrs: Map<String, String>) -> Boolean,
         /** Scan one page over USB at [dpi]/[colorMode] (eSCL names). */
         val scan: (dpi: Int, colorMode: String) -> ByteArray,
         /**
@@ -349,6 +350,10 @@ class PhoneBridgeServer(
             respond(sock, 200, ippReply(reqId, false), "application/ipp")
             return
         }
+        
+        // **PARSE IPP ATTRIBUTES FROM REQUEST**
+        val attrs = parseIppAttributes(body)
+        
         // No busy rejection: the handler queues behind the running job and
         // this HTTP thread waits for our FIFO turn (office-queue behavior).
         val doc = ippDocument(body)
@@ -361,13 +366,64 @@ class PhoneBridgeServer(
             doc.size >= 2 && doc[0] == 0xFF.toByte() && doc[1] == 0xD8.toByte() -> "jpeg"
             else -> "raw"
         }
-        val ok = runCatching { handlers.printDocument(doc, hint) }.getOrDefault(false)
+        
+        // **PASS ATTRIBUTES TO PRINT FUNCTION**
+        val ok = runCatching { handlers.printDocument(doc, hint, attrs) }.getOrDefault(false)
         if (ok) jobsSent.incrementAndGet()
         runCatching {
             handlers.onRequest("POST", "/ipp/print",
-                if (ok) "printed ${doc.size / 1024}KB" else "REJECTED")
+                if (ok) "printed ${doc.size / 1024}KB with attrs=$attrs" else "REJECTED")
         }
         respond(sock, 200, ippReply(reqId, ok), "application/ipp")
+    }
+
+    /**
+     * Parse IPP attributes from request body.
+     * Extracts print settings (dpi, color-mode, media, copies) from IPP job attributes.
+     */
+    private fun parseIppAttributes(body: ByteArray): Map<String, String> {
+        val attrs = mutableMapOf<String, String>()
+        var pos = 8 // Skip version(2) + operation(2) + request-id(4)
+        
+        while (pos < body.size) {
+            val tag = body[pos].toInt() and 0xFF
+            if (tag == 0x03) break // End of attributes
+            
+            if (tag <= 0x0F) {
+                pos++ // Group tag, skip
+                continue
+            }
+            
+            if (pos + 3 > body.size) break
+            
+            // Read attribute name length
+            val nlen = ((body[pos + 1].toInt() and 0xFF) shl 8) or (body[pos + 2].toInt() and 0xFF)
+            pos += 3
+            
+            if (pos + nlen > body.size) break
+            val name = String(body.copyOfRange(pos, pos + nlen), Charsets.UTF_8)
+            pos += nlen
+            
+            if (pos + 2 > body.size) break
+            
+            // Read attribute value length
+            val vlen = ((body[pos].toInt() and 0xFF) shl 8) or (body[pos + 1].toInt() and 0xFF)
+            pos += 2
+            
+            if (pos + vlen > body.size) break
+            val value = String(body.copyOfRange(pos, pos + vlen), Charsets.UTF_8)
+            pos += vlen
+            
+            // Store print-relevant attributes
+            when (name.lowercase()) {
+                "print-quality", "print-resolution" -> attrs["dpi"] = value
+                "print-color-mode", "color-mode" -> attrs["colorMode"] = value
+                "media", "media-size" -> attrs["paper"] = value
+                "copies" -> attrs["copies"] = value
+            }
+        }
+        
+        return attrs
     }
 
     // ---- eSCL (mirrors windows-bridge/httpd.py caps)

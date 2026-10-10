@@ -1518,7 +1518,11 @@ class MainActivity : ComponentActivity() {
                         for (u in uris.take(20)) {
                             val bytes = contentResolver.openInputStream(u)
                                 ?.use { it.readBytes() } ?: continue
-                            if (!bridge().printImage(bytes, "Android Wi-Fi image")) {
+                            if (!bridge().printImage(bytes, "Android Wi-Fi image",
+                                    dpi = printDpi,
+                                    grayscale = grayscale,
+                                    paperName = paper.name,
+                                    copies = 1)) {
                                 okAll = false
                             }
                         }
@@ -2023,7 +2027,11 @@ class MainActivity : ComponentActivity() {
                     repeat(reps) {
                         val ok = withContext(Dispatchers.IO) {
                             bridge().printPdf(pdfFile.readBytes(),
-                                "Android Wi-Fi PDF")
+                                "Android Wi-Fi PDF",
+                                dpi = printDpi,
+                                grayscale = grayscale,
+                                paperName = paper.name,
+                                copies = pendingPreviewCopies)
                         }
                         if (!ok) okAll = false
                     }
@@ -2062,7 +2070,11 @@ class MainActivity : ComponentActivity() {
                         subsetPdfBytes(pdfFile, evens)
                     }
                     val ok1 = withContext(Dispatchers.IO) {
-                        bridge().printDuplexPass(pass1, "pass 1/2 (backs)")
+                        bridge().printDuplexPass(pass1, "pass 1/2 (backs)",
+                            dpi = printDpi,
+                            grayscale = grayscale,
+                            paperName = paper.name,
+                            copies = 1)
                     }
                     if (!ok1) {
                         Toast.makeText(this@MainActivity,
@@ -2087,7 +2099,11 @@ class MainActivity : ComponentActivity() {
                         subsetPdfBytes(pdfFile, odds)
                     }
                     val ok2 = withContext(Dispatchers.IO) {
-                        bridge().printDuplexPass(pass2, "pass 2/2 (fronts)")
+                        bridge().printDuplexPass(pass2, "pass 2/2 (fronts)",
+                            dpi = printDpi,
+                            grayscale = grayscale,
+                            paperName = paper.name,
+                            copies = 1)
                     }
                     JobControl.end()
                     if (ok2) Notifier.jobDone(this@MainActivity,
