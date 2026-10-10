@@ -120,7 +120,48 @@ object Pcl5MonoWriter {
         val monoData = convertToMono(bitmap, targetWidth, targetHeight)
         
         // Then apply RLE compression
-        return compressRle(monoData, targetWidth, targetHeight)
+        return compressRleSimple(monoData, targetWidth, targetHeight)
+    }
+
+    /**
+     * Simple RLE compression for PCL5 *b#W mode.
+     * Each output byte: sign bit (MSB) + 7-bit count
+     * - sign=0: next (count+1) pixels are white
+     * - sign=1: next (count+1) pixels are black
+     * Max run per code: 127 pixels
+     */
+    private fun compressRleSimple(monoData: ByteArray, width: Int, height: Int): ByteArray {
+        val out = ByteArrayOutputStream(monoData.size)
+        val totalBits = width * height
+        var bitPos = 0
+        
+        while (bitPos < totalBits) {
+            val byteIdx = bitPos / 8
+            val bitInByte = 7 - (bitPos % 8)
+            val isBlack = byteIdx < monoData.size && 
+                         ((monoData[byteIdx].toInt() and 0xFF) shr bitInByte and 1) == 1
+            
+            // Count consecutive same-color pixels (max 127)
+            var run = 1
+            while (run < 127 && bitPos + run < totalBits) {
+                val testByteIdx = (bitPos + run) / 8
+                val testBit = 7 - ((bitPos + run) % 8)
+                val testIsBlack = testByteIdx < monoData.size &&
+                                ((monoData[testByteIdx].toInt() and 0xFF) shr testBit and 1) == 1
+                if (testIsBlack == isBlack) {
+                    run++
+                } else {
+                    break
+                }
+            }
+            
+            // Write RLE byte: sign (1=black, 0=white) + (run-1)
+            val rleByte = if (isBlack) (0x80 or (run - 1)) else (run - 1)
+            out.write(rleByte)
+            bitPos += run
+        }
+        
+        return out.toByteArray()
     }
 
     /**
@@ -172,49 +213,7 @@ object Pcl5MonoWriter {
      * - sign=1: next (count+1) pixels are black (1)
      * Max run: 127 pixels (0x7F)
      */
-    private fun compressRle(monoData: ByteArray, width: Int, height: Int): ByteArray {
-        val out = ByteArrayOutputStream(monoData.size)
-        
-        val totalBits = width * height
-        
-        var bitIndex = 0
-        while (bitIndex < totalBits) {
-            // Get current bit value
-            val byteIndex = bitIndex / 8
-            val bitInByte = 7 - (bitIndex % 8)
-            val currentBitValue = if (byteIndex < monoData.size) {
-                (monoData[byteIndex].toInt() and 0xFF) shr bitInByte and 1
-            } else {
-                0
-            }
-            
-            // Find run length (max 127)
-            var runLength = 0
-            while (runLength < 127 && bitIndex + runLength < totalBits) {
-                val testByteIndex = (bitIndex + runLength) / 8
-                val testBitInByte = 7 - ((bitIndex + runLength) % 8)
-                val testBitValue = if (testByteIndex < monoData.size) {
-                    (monoData[testByteIndex].toInt() and 0xFF) shr testBitInByte and 1
-                } else {
-                    0
-                }
-                if (testBitValue == currentBitValue) {
-                    runLength++
-                } else {
-                    break
-                }
-            }
-            
-            // Write RLE code
-            val count = runLength.coerceAtMost(128) - 1
-            val rleByte = if (currentBitValue == 1) (0x80 or count) else count
-            out.write(rleByte)
-            
-            bitIndex += runLength
-        }
-        
-        return out.toByteArray()
-    }
+
 
     /**
      * Builds a complete PCL5 mono print stream for multiple pages.
