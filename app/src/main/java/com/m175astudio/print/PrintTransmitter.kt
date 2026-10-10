@@ -1,5 +1,6 @@
 package com.m175astudio.print
 
+import android.graphics.BitmapFactory
 import com.m175astudio.usb.UsbPrinterConnection
 import java.io.InputStream
 import java.io.OutputStream

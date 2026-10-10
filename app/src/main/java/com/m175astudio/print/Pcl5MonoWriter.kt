@@ -138,7 +138,7 @@ object Pcl5MonoWriter {
                 val isBlack = luminance < 128 * 256 * 256  // Threshold at 50%
                 
                 if (isBlack) {
-                    monoData[byteIndex] = monoData[byteIndex] or (1 shl bitIndex).toByte()
+                    monoData[byteIndex] = (monoData[byteIndex].toInt() or (1 shl bitIndex)).toByte()
                 }
             }
         }
@@ -157,10 +157,11 @@ object Pcl5MonoWriter {
             val currentByte = monoData[i].toInt() and 0xFF
             var runLength = 0
             var currentBit = 7  // Start with MSB
+            var currentBitValue = 0
             
             // Process current byte
             while (currentBit >= 0 && i < monoData.size) {
-                val bit = (currentByte shr currentBit) and 1
+                currentBitValue = (currentByte shr currentBit) and 1
                 runLength++
                 currentBit--
                 
@@ -173,7 +174,7 @@ object Pcl5MonoWriter {
                         val nextBit = 7
                         val nextBitVal = (nextByte shr nextBit) and 1
                         
-                        if (nextBitVal == bit && runLength < 127) {
+                        if (nextBitVal == currentBitValue && runLength < 127) {
                             // Continue run
                             currentBit = nextBit - 1
                             // Will be processed in next iteration
@@ -191,7 +192,7 @@ object Pcl5MonoWriter {
             // Sign bit: 0 for white (0), 1 for black (1)
             // Count: runLength - 1 (max 127)
             val count = (runLength - 1).coerceAtMost(127)
-            val rleByte = if (bit == 1) (0x80 or count) else count
+            val rleByte = if (currentBitValue == 1) (0x80 or count) else count
             out.write(rleByte)
             
             // If we hit max run length, continue with same color
