@@ -24,41 +24,25 @@ object Pcl5MonoWriter {
     private const val ESC = 0x1B
 
     /**
-     * Writes a complete PCL5 mono print job (1-bit RLE compressed).
+     * Writes a PCL5 mono page (1-bit RLE compressed) WITHOUT PJL header/footer.
+     * Call writeMonoJobHeader() once at start, then writeMonoPage() for each page,
+     * then writeMonoJobFooter() once at end.
      * 
-     * Structure:
-     *   UEL + PJL ENTER LANGUAGE=PCL
+     * Structure (per page):
      *   *pWxHY (page size)
      *   *tDPI R (resolution)
      *   *r0F (start raster)
      *   *b#W (RLE compression mode)
      *   [RLE-encoded bitmap data]
      *   *rB (end raster)
-     *   UEL + PJL EOJ
      */
     fun writeMonoPage(
         out: OutputStream,
         bitmap: Bitmap,
         dpi: Int,
-        paper: Paper = Paper.A4,
-        copies: Int = 1
+        paper: Paper = Paper.A4
     ) {
         val (width, height) = paper.destUnits(dpi)
-        
-        // UEL + PJL header
-        out.write(byteArrayOf(ESC.toByte()))
-        out.write("%-12345X".toByteArray(Charsets.ISO_8859_1))
-        out.write("@PJL ENTER LANGUAGE=PCL\r\n".toByteArray(Charsets.ISO_8859_1))
-        out.write(byteArrayOf(ESC.toByte()))
-        out.write("%-12345X".toByteArray(Charsets.ISO_8859_1))
-        
-        // PJL settings for mono
-        out.write("@PJL SET RESOLUTION=$dpi\r\n".toByteArray(Charsets.ISO_8859_1))
-        out.write("@PJL SET GRAYSCALE=ON\r\n".toByteArray(Charsets.ISO_8859_1))
-        out.write("@PJL SET BITSPERPIXEL=1\r\n".toByteArray(Charsets.ISO_8859_1))
-        if (copies > 1) {
-            out.write("@PJL SET COPIES=$copies\r\n".toByteArray(Charsets.ISO_8859_1))
-        }
         
         // PCL5 commands
         // *pWxHY = Set page size (width x height)
@@ -79,11 +63,45 @@ object Pcl5MonoWriter {
         
         // *rB = End raster graphics
         out.write("*rB".toByteArray(Charsets.ISO_8859_1))
+    }
+
+    /**
+     * Writes the PJL header for a mono job (call once at start).
+     */
+    fun writeMonoJobHeader(
+        out: OutputStream,
+        dpi: Int,
+        copies: Int = 1,
+        jobName: String = "M175-Mono"
+    ) {
+        // UEL + PJL header
+        out.write(byteArrayOf(ESC.toByte()))
+        out.write("%-12345X".toByteArray(Charsets.ISO_8859_1))
+        out.write("@PJL ENTER LANGUAGE=PCL\r\n".toByteArray(Charsets.ISO_8859_1))
+        out.write(byteArrayOf(ESC.toByte()))
+        out.write("%-12345X".toByteArray(Charsets.ISO_8859_1))
         
+        // PJL settings for mono
+        out.write("@PJL SET RESOLUTION=$dpi\r\n".toByteArray(Charsets.ISO_8859_1))
+        out.write("@PJL SET GRAYSCALE=ON\r\n".toByteArray(Charsets.ISO_8859_1))
+        out.write("@PJL SET BITSPERPIXEL=1\r\n".toByteArray(Charsets.ISO_8859_1))
+        if (copies > 1) {
+            out.write("@PJL SET COPIES=$copies\r\n".toByteArray(Charsets.ISO_8859_1))
+        }
+        out.write("@PJL SET JOBNAME=\"$jobName\"\r\n".toByteArray(Charsets.ISO_8859_1))
+    }
+
+    /**
+     * Writes the PJL footer for a mono job (call once at end).
+     */
+    fun writeMonoJobFooter(
+        out: OutputStream,
+        jobName: String = "M175-Mono"
+    ) {
         // UEL + PJL EOJ
         out.write(byteArrayOf(ESC.toByte()))
         out.write("%-12345X".toByteArray(Charsets.ISO_8859_1))
-        out.write("@PJL EOJ\r\n".toByteArray(Charsets.ISO_8859_1))
+        out.write("@PJL EOJ NAME=\"$jobName\"\r\n".toByteArray(Charsets.ISO_8859_1))
         out.write(byteArrayOf(ESC.toByte()))
         out.write("%-12345X".toByteArray(Charsets.ISO_8859_1))
     }
@@ -148,58 +166,54 @@ object Pcl5MonoWriter {
 
     /**
      * Compresses 1bpp monochrome data using PCL5 RLE encoding (*b#W mode).
+     * 
+     * PCL5 RLE format: Each byte = sign bit (MSB) + 7-bit count
+     * - sign=0: next (count+1) pixels are white (0)
+     * - sign=1: next (count+1) pixels are black (1)
+     * Max run: 127 pixels (0x7F)
      */
     private fun compressRle(monoData: ByteArray): ByteArray {
         val out = ByteArrayOutputStream(monoData.size)
         
-        var i = 0
-        while (i < monoData.size) {
-            val currentByte = monoData[i].toInt() and 0xFF
-            var runLength = 0
-            var currentBit = 7  // Start with MSB
-            var currentBitValue = 0
+        val bytesPerRow = (paper.destUnits(300).first + 7) / 8
+        val totalBytes = bytesPerRow * paper.destUnits(300).second
+        
+        var bitIndex = 0
+        val totalBits = totalBytes * 8
+        
+        while (bitIndex < totalBits) {
+            // Get current bit value
+            val byteIndex = bitIndex / 8
+            val bitInByte = 7 - (bitIndex % 8)
+            val currentBitValue = if (byteIndex < monoData.size) {
+                (monoData[byteIndex].toInt() and 0xFF) shr bitInByte and 1
+            } else {
+                0
+            }
             
-            // Process current byte
-            while (currentBit >= 0 && i < monoData.size) {
-                currentBitValue = (currentByte shr currentBit) and 1
-                runLength++
-                currentBit--
-                
-                if (currentBit < 0) {
-                    // Move to next byte
-                    i++
-                    if (i < monoData.size) {
-                        // Check if next byte continues the run
-                        val nextByte = monoData[i].toInt() and 0xFF
-                        val nextBit = 7
-                        val nextBitVal = (nextByte shr nextBit) and 1
-                        
-                        if (nextBitVal == currentBitValue && runLength < 127) {
-                            // Continue run
-                            currentBit = nextBit - 1
-                            // Will be processed in next iteration
-                        } else {
-                            // End of run
-                            break
-                        }
-                    } else {
-                        break
-                    }
+            // Find run length
+            var runLength = 0
+            while (runLength < 127 && bitIndex + runLength < totalBits) {
+                val testByteIndex = (bitIndex + runLength) / 8
+                val testBitInByte = 7 - ((bitIndex + runLength) % 8)
+                val testBitValue = if (testByteIndex < monoData.size) {
+                    (monoData[testByteIndex].toInt() and 0xFF) shr testBitInByte and 1
+                } else {
+                    0
+                }
+                if (testBitValue == currentBitValue) {
+                    runLength++
+                } else {
+                    break
                 }
             }
             
             // Write RLE code
-            // Sign bit: 0 for white (0), 1 for black (1)
-            // Count: runLength - 1 (max 127)
-            val count = (runLength - 1).coerceAtMost(127)
+            val count = runLength.coerceAtMost(128) - 1
             val rleByte = if (currentBitValue == 1) (0x80 or count) else count
             out.write(rleByte)
             
-            // If we hit max run length, continue with same color
-            if (runLength > 127) {
-                // We need to write multiple RLE codes for long runs
-                // This is handled by the loop continuing
-            }
+            bitIndex += runLength
         }
         
         return out.toByteArray()

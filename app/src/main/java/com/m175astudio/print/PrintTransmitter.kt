@@ -173,12 +173,12 @@ object PrintTransmitter {
             // This is the trade-off: CPU for compression vs. tiny file size
             val firstBmp = BitmapFactory.decodeByteArray(first.jpeg, 0, first.jpeg.size)
             
-            // Write PCL5 header for mono job (only once for entire job)
-            usb.sendPrint(buildMonoHeader(dpi, jobName, copies, paper))
+            // Write PCL5 job header (only once for entire job)
+            Pcl5MonoWriter.writeMonoJobHeader(usb.printStream(), dpi, copies, jobName)
             
             // Write first page
             Pcl5MonoWriter.writeMonoPage(
-                usb.printStream(), firstBmp, dpi, paper, 1  // copies=1, set in header
+                usb.printStream(), firstBmp, dpi, paper
             )
             sent += estimateMonoSize(first.width, first.height)
             firstBmp.recycle()
@@ -194,7 +194,7 @@ object PrintTransmitter {
                 val bmp = BitmapFactory.decodeByteArray(page.jpeg, 0, page.jpeg.size)
                 
                 Pcl5MonoWriter.writeMonoPage(
-                    usb.printStream(), bmp, dpi, paper, 1  // copies=1, already set in header
+                    usb.printStream(), bmp, dpi, paper
                 )
                 sent += estimateMonoSize(page.width, page.height)
                 bmp.recycle()
@@ -206,8 +206,8 @@ object PrintTransmitter {
                 onStatus("page $p/$totalPages sent (PCL5 mono)")
             }
             
-            // Write PCL5 footer
-            usb.sendPrint(buildMonoFooter(jobName))
+            // Write PCL5 job footer (only once at end)
+            Pcl5MonoWriter.writeMonoJobFooter(usb.printStream(), jobName)
             
             return Result.Ok(sent)
         } catch (e: com.m175astudio.usb.PrintCancelledException) {
@@ -224,31 +224,7 @@ object PrintTransmitter {
         return (width.toLong() * height * 1L) / 48
     }
 
-    private fun buildMonoHeader(dpi: Int, jobName: String, copies: Int, paper: Paper): ByteArray {
-        val out = java.io.ByteArrayOutputStream(256)
-        // PJL header for PCL5
-        out.write(byteArrayOf(0x1B.toByte()))
-        out.write("%-12345X".toByteArray(Charsets.ISO_8859_1))
-        out.write("@PJL ENTER LANGUAGE=PCL\r\n".toByteArray(Charsets.ISO_8859_1))
-        out.write("@PJL SET RESOLUTION=$dpi\r\n".toByteArray(Charsets.ISO_8859_1))
-        out.write("@PJL SET GRAYSCALE=ON\r\n".toByteArray(Charsets.ISO_8859_1))
-        out.write("@PJL SET BITSPERPIXEL=1\r\n".toByteArray(Charsets.ISO_8859_1))
-        if (copies > 1) {
-            out.write("@PJL SET COPIES=$copies\r\n".toByteArray(Charsets.ISO_8859_1))
-        }
-        out.write(byteArrayOf(0x1B.toByte()))
-        out.write("%-12345X".toByteArray(Charsets.ISO_8859_1))
-        return out.toByteArray()
-    }
 
-    private fun buildMonoFooter(jobName: String): ByteArray {
-        val out = java.io.ByteArrayOutputStream(64)
-        out.write(byteArrayOf(0x1B.toByte()))
-        out.write("%-12345X@PJL EOJ NAME=\"$jobName\"\r\n".toByteArray(Charsets.ISO_8859_1))
-        out.write(byteArrayOf(0x1B.toByte()))
-        out.write("%-12345X".toByteArray(Charsets.ISO_8859_1))
-        return out.toByteArray()
-    }
 
     private fun buildHeader(dpi: Int, grayscale: Boolean, jobName: String,
                             copies: Int = 1): ByteArray {
