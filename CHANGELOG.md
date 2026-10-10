@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.2 — Wi-Fi bridge fix + fast mono printing
+
+- **Wi-Fi bridge now uses client phone's settings** (DPI, color mode, paper size, copies) instead of host phone's saved settings via IPP job attributes
+- **Fast B&W printing** using PCL5 with 1-bit RLE compression (*b#W) - 3-5x faster than PCL XL grayscale JPEG, matching official HP plugin speed
+- **PCL5MonoWriter** added for efficient mono page compression
+- **PrintTransmitter** now routes grayscale jobs to PCL5 mono path automatically
+- All print settings properly transmitted through bridge: dpi, grayscale, paper, copies
+
 ## v0.1 — first release (re-cut)
 
 - App name **M175a Print**, package `com.m175astudio` (was `com.ganesan.m175otg`)
