@@ -167,6 +167,9 @@ object Pcl5MonoWriter {
     /**
      * Converts bitmap to 1-bit monochrome (1bpp) scanline data.
      * Each byte contains 8 pixels (MSB first).
+     * 
+     * The bitmap is already rendered at the target size by PageRenderer,
+     * so we don't need to scale. Just convert each pixel.
      */
     private fun convertToMono(bitmap: Bitmap, targetWidth: Int, targetHeight: Int): ByteArray {
         val width = bitmap.width
@@ -185,16 +188,18 @@ object Pcl5MonoWriter {
                 val byteIndex = rowStart + (x / 8)
                 val bitIndex = 7 - (x % 8)  // MSB first
                 
-                // Get pixel color (use simple thresholding)
-                val srcX = (x * width) / targetWidth
-                val srcY = (y * height) / targetHeight
+                // Map target coordinate to bitmap coordinate
+                // Bitmap is already at target size, so x,y map directly
+                val srcX = x.coerceAtMost(width - 1)
+                val srcY = y.coerceAtMost(height - 1)
                 val pixel = pixels[srcY * width + srcX]
                 
                 // Convert ARGB to luminance and threshold
-                val luminance = ((pixel and 0xFF0000) shr 16) * 0.299f + 
-                               ((pixel and 0x00FF00) shr 8) * 0.587f + 
-                               (pixel and 0x0000FF) * 0.114f
-                val isBlack = luminance < 128 * 256 * 256  // Threshold at 50%
+                val r = (pixel shr 16) and 0xFF
+                val g = (pixel shr 8) and 0xFF
+                val b = pixel and 0xFF
+                val luminance = r * 0.299f + g * 0.587f + b * 0.114f
+                val isBlack = luminance < 128.0f  // Threshold at 50% (0-255 range)
                 
                 if (isBlack) {
                     monoData[byteIndex] = (monoData[byteIndex].toInt() or (1 shl bitIndex)).toByte()
